@@ -1,5 +1,5 @@
 /**
- * Tipos derivados de docs/api/openapi.yaml (versión 1.0.0 del API).
+ * Tipos derivados de docs/api/openapi.yaml.
  * Las claves van tal cual las define el API (español, con guion bajo).
  * Los objetos aceptan campos extra (`[campo: string]: unknown`) porque el API puede crecer.
  */
@@ -47,6 +47,43 @@ export interface ItemParaCalcular {
   codigo_interno?: string
   /** Default `NIU`. */
   unidad_de_medida?: string
+}
+
+/**
+ * Ítem para `comprobantes.calcular` (cálculo en el servidor, `POST /calcular`).
+ * Manda `valor_unitario` (SIN IGV) **o** `precio_unitario` (CON IGV), no los dos.
+ */
+export type ItemParaCalcularEnServidor = {
+  descripcion: string
+  /** Mayor que 0. */
+  cantidad: number
+  /** 10 gravado, 20 exonerado, 30 inafecto, 40 exportación. */
+  afectacion: Afectacion
+  /** Se copia tal cual al resultado. */
+  codigo_interno?: string
+  /** Código SUNAT (`NIU` bienes, `ZZ` servicios, `KGM`…). Default `NIU`. */
+  unidad_de_medida?: string
+} & (
+  | {
+      /** Precio unitario SIN IGV. */
+      valor_unitario: number
+      precio_unitario?: never
+    }
+  | {
+      /** Precio unitario CON IGV (respeta lo que paga el cliente: 3 × 10.00 = 30.00). */
+      precio_unitario: number
+      valor_unitario?: never
+    }
+)
+
+export interface OpcionesCalculo {
+  /** IGV de los ítems gravados: 18 (default) o 10.5 (tasa reducida Ley 31556, solo RUCs acogidos). */
+  porcentaje_igv?: 18 | 10.5
+}
+
+export interface OpcionesCatalogo extends OpcionesRuc {
+  /** Filtro por código o descripción (no distingue mayúsculas). Máx. 100 caracteres. */
+  q?: string
 }
 
 // ───────────── Emisión ─────────────
@@ -289,13 +326,24 @@ export interface RespuestaSeries {
   series: { serie: string; codigo_tipo_documento: string; siguiente_numero: number }[]
 }
 
-export interface RespuestaEmision extends SunatFeedback {
+/** Campos de cobro de las operaciones que consumen crédito (schema CobroOperacion). */
+export interface CobroOperacion {
+  /** Saldo real de créditos después de la operación (en demo no cambia). */
+  creditos_restantes: number
+  /** true si esta operación descontó 1 crédito. En RUCs demo siempre false. */
+  credito_cobrado?: boolean
+  /** Solo en RUCs demo (sin costo). */
+  modo_demo?: true
+  /** Solo en RUCs demo: operaciones demo que le quedan hoy a la cuenta (tope 200/día, hora de Perú). */
+  pruebas_restantes_hoy?: number
+}
+
+export interface RespuestaEmision extends SunatFeedback, CobroOperacion {
   success: true
   estado: EstadoCodigo
   estado_descripcion?: string | null
   serie_numero: string
   external_id: string
-  creditos_restantes: number
   [campo: string]: unknown
 }
 
@@ -364,33 +412,52 @@ export interface RespuestaHistorial extends SunatFeedback {
   [campo: string]: unknown
 }
 
-export interface RespuestaAnulacion {
+/** `baja` = comunicación de baja (facturas y sus notas); `resumen` = resumen diario (boletas y sus notas). */
+export type TipoAnulacion = 'baja' | 'resumen'
+
+export interface RespuestaAnulacion extends CobroOperacion {
   success: true
   message: string
+  /** El API elige el camino según lo que mandes: facturas → `baja`, boletas → `resumen`. */
+  tipo: TipoAnulacion
+  /** Ticket de SUNAT para `anulaciones.estado(ticket)`. */
   ticket: string | null
+  /** Identificador de la anulación (comunicación de baja o resumen). */
   external_id: string
-  creditos_restantes: number
+  /** Número SUNAT de la anulación: `RA-AAAAMMDD-N` (baja) o `RC-AAAAMMDD-N` (resumen). */
+  identificador: string | null
+  [campo: string]: unknown
+}
+
+export interface DocumentoEnAnulacion {
+  external_id: string | null
+  serie_numero: string | null
+  /** `11` anulado, `13` todavía por anular; `01` si SUNAT rechazó un resumen de boletas. */
+  estado: string | null
   [campo: string]: unknown
 }
 
 export interface RespuestaEstadoAnulacion {
   success: true
+  tipo: TipoAnulacion
   ticket: string
+  /** Estado de la anulación: `05` aceptada, `09` rechazada, `03` enviada. */
   estado: EstadoCodigo
   external_id: string
-  sunat?: Record<string, unknown> | null
+  /** Cada comprobante incluido en la anulación y su estado actual. */
+  documentos: DocumentoEnAnulacion[]
+  sunat?: Record<string, unknown> | unknown[] | null
   [campo: string]: unknown
 }
 
-export interface RespuestaGuia {
+export interface RespuestaGuia extends CobroOperacion {
   success: true
   serie_numero: string
   external_id: string
-  /** true si SUNAT aceptó el envío (solo entonces se cobra el crédito). */
+  /** true si SUNAT aceptó el envío (solo entonces se cobra el crédito, y solo en un RUC en producción). */
   enviado: boolean
   mensaje: string
   envio?: Record<string, unknown> | null
-  creditos_restantes: number
   [campo: string]: unknown
 }
 
@@ -430,4 +497,60 @@ export interface RespuestaActivacionRuc {
   ruc: string
   activo: boolean
   mensaje: string
+}
+
+// ───────────── Herramientas (/calcular, /catalogos) ─────────────
+
+export interface RespuestaCalculo {
+  success: true
+  /** Ítems en el formato exacto de `comprobantes.emitir` (`items`). */
+  items: ItemComprobante[]
+  totales: Totales
+  [campo: string]: unknown
+}
+
+export interface CatalogoDisponible {
+  /** Ej. `unidades`. */
+  nombre: string
+  /** Número SUNAT, ej. `03`. */
+  catalogo_sunat: string
+  descripcion: string
+  url: string
+  [campo: string]: unknown
+}
+
+export interface RespuestaCatalogos {
+  success: true
+  catalogos: CatalogoDisponible[]
+  nota?: string
+  [campo: string]: unknown
+}
+
+export interface FilaCatalogo {
+  codigo: string
+  descripcion: string
+  /** Usa solo las filas activas: el RUC valida contra ellas al emitir. */
+  activo: boolean
+  /** Solo en tipos-documento. */
+  abreviatura?: string | null
+  /** Solo en monedas y unidades. */
+  simbolo?: string | null
+  /** Solo en afectacion-igv y tipos-operacion. */
+  es_exportacion?: boolean
+  /** Solo en afectacion-igv. */
+  es_gratuito?: boolean
+  /** Solo en detracciones. */
+  porcentaje?: number | string | null
+  [campo: string]: unknown
+}
+
+export interface RespuestaCatalogo {
+  success: true
+  /** Nombre del catálogo, ej. `afectacion-igv`. */
+  catalogo: string
+  catalogo_sunat: string
+  descripcion: string
+  total: number
+  datos: FilaCatalogo[]
+  [campo: string]: unknown
 }

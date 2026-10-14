@@ -15,6 +15,7 @@ export const CODIGOS_DE_ERROR = [
   'SIN_CREDITOS',
   'RUC_NO_AUTORIZADO',
   'RUC_DESACTIVADO',
+  'LLAVE_DE_PRUEBA_EN_PRODUCCION',
   'SIN_PERMISO',
   'NO_ENCONTRADO',
   'RUTA_NO_ENCONTRADA',
@@ -30,6 +31,10 @@ export const CODIGOS_DE_ERROR = [
   'REENVIO_FALLIDO',
   'SUNAT_NO_DISPONIBLE',
   'LIMITE_PETICIONES',
+  /** 429 NO reintentable: tope diario de 200 operaciones en RUCs demo (se reinicia a medianoche de Lima). */
+  'LIMITE_PRUEBAS_DIARIO',
+  /** 422: facturas y boletas en la misma anulación. */
+  'ANULACION_MIXTA',
   'ERROR_INTERNO',
 ] as const
 
@@ -113,8 +118,11 @@ export class ErrorDeValidacion extends FactuSmartError {
 }
 
 /**
- * Límite de peticiones superado. El API puede responder 429, o 500 con
- * `message: "Too Many Attempts."` (comportamiento actual documentado en openapi.yaml).
+ * Límite superado (HTTP 429, o 500 con `message: "Too Many Attempts."` en servidores anteriores).
+ * Distingue el caso por `codigo`:
+ * - `LIMITE_PETICIONES` (`reintentable: true`): límite por minuto; el SDK reintenta solo.
+ * - `LIMITE_PRUEBAS_DIARIO` (`reintentable: false`): tope de 200 operaciones/día en RUCs demo. No se
+ *   reintenta; el cupo se reinicia a medianoche (hora de Perú).
  */
 export class LimiteDePeticiones extends FactuSmartError {
   /** Segundos que pide esperar el API (Retry-After o "Espera N segundos"), si se pudo leer. */

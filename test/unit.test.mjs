@@ -492,6 +492,129 @@ test('codigo LIMITE_PETICIONES cuenta como límite aunque el status no sea 429',
   await assert.rejects(fs.ping(), (e) => e instanceof LimiteDePeticiones && e.codigo === 'LIMITE_PETICIONES')
 })
 
+// ───────────── reintentable:false manda (API 2026-10) ─────────────
+
+const LIMITE_DIARIO = {
+  success: false,
+  message: 'Llegaste al máximo de 200 pruebas por día en modo demo. Mañana se reinicia (medianoche, hora de Perú).',
+  codigo: 'LIMITE_PRUEBAS_DIARIO',
+  reintentable: false,
+  creditos_restantes: 14945,
+  pruebas_restantes_hoy: 0,
+  limite_pruebas_diario: 200,
+}
+
+test('429 LIMITE_PRUEBAS_DIARIO (reintentable:false) lanza LimiteDePeticiones tras UNA sola petición', async () => {
+  const casos = [(fs) => fs.comprobantes.emitir(DATOS()), (fs) => fs.ping(), (fs) => fs.comprobantes.calcular([{ descripcion: 'X', cantidad: 1, valor_unitario: 1, afectacion: '10' }])]
+  for (const llamar of casos) {
+    const { fs, fetch, esperas } = cliente([{ status: 429, cuerpo: LIMITE_DIARIO }, { cuerpo: EMISION_OK }])
+    await assert.rejects(llamar(fs), (e) => {
+      assert.ok(e instanceof LimiteDePeticiones, `fue ${e.constructor.name}`)
+      assert.equal(e.status, 429)
+      assert.equal(e.codigo, 'LIMITE_PRUEBAS_DIARIO')
+      assert.equal(e.reintentable, false)
+      return true
+    })
+    assert.equal(fetch.llamadas.length, 1)
+    assert.deepEqual(esperas, [])
+  }
+})
+
+test('reintentable:false también manda sobre 409 en emitir y sobre 503', async () => {
+  const conflicto = cliente([{ status: 409, cuerpo: { success: false, message: 'x', codigo: 'CONFLICTO', reintentable: false } }, { cuerpo: EMISION_OK }])
+  await assert.rejects(conflicto.fs.comprobantes.emitir(DATOS()), (e) => e.status === 409 && e.reintentable === false)
+  assert.equal(conflicto.fetch.llamadas.length, 1)
+
+  const caido = cliente([{ status: 503, cuerpo: { success: false, message: 'x', codigo: 'ERROR_503', reintentable: false } }, { cuerpo: { success: true } }])
+  await assert.rejects(caido.fs.cuenta.saldo(), (e) => e.status === 503)
+  assert.equal(caido.fetch.llamadas.length, 1)
+})
+
+test('429 LIMITE_PETICIONES con reintentable:true SÍ se reintenta (respeta Retry-After)', async () => {
+  const { fs, fetch, esperas } = cliente([
+    { status: 429, cuerpo: { success: false, message: 'Demasiadas peticiones. Espera 40 segundos.', retry_after: 40, codigo: 'LIMITE_PETICIONES', reintentable: true }, cabeceras: { 'Retry-After': '3' } },
+    { cuerpo: EMISION_OK },
+  ])
+  const r = await fs.comprobantes.emitir(DATOS())
+  assert.equal(r.external_id, EMISION_OK.external_id)
+  assert.equal(fetch.llamadas.length, 2)
+  assert.deepEqual(esperas, [3000])
+})
+
+// ───────────── comprobantes.calcular y catalogos ─────────────
+
+test('comprobantes.calcular: POST /calcular con {items, porcentaje_igv}, sin ruc, y devuelve la respuesta tal cual', async () => {
+  const resp = { success: true, items: [{ descripcion: 'Menu', total_item: 30 }], totales: { total_venta: 30 } }
+  const { fs, fetch } = cliente([{ cuerpo: resp }])
+  const items = [{ codigo_interno: 'M1', descripcion: 'Menu', cantidad: 3, precio_unitario: 10, afectacion: '10', unidad_de_medida: 'ZZ' }]
+  const r = await fs.comprobantes.calcular(items, { porcentaje_igv: 10.5 })
+  assert.deepEqual(r, resp)
+  const ll = fetch.llamadas[0]
+  assert.equal(ll.init.method, 'POST')
+  assert.equal(ll.url, `${BASE}/calcular`)
+  assert.deepEqual(ll.cuerpo, { items, porcentaje_igv: 10.5 })
+  assert.equal(ll.cabeceras['Idempotency-Key'], undefined)
+
+  // sin opciones: solo items (ni ruc ni porcentaje_igv)
+  const otro = cliente([{ cuerpo: resp }])
+  await otro.fs.comprobantes.calcular(items)
+  assert.deepEqual(otro.fetch.llamadas[0].cuerpo, { items })
+
+  await assert.rejects(fs.comprobantes.calcular([]), FactuSmartError)
+})
+
+test('comprobantes.calcular se reintenta como un GET (503 y 500 reintentable)', async () => {
+  const { fs, fetch } = cliente([
+    { status: 503, cuerpo: { success: false, message: 'caído' } },
+    { status: 500, cuerpo: { success: false, message: 'x', codigo: 'ERROR_INTERNO', reintentable: true } },
+    { cuerpo: { success: true, items: [], totales: { total_venta: 0 } } },
+  ])
+  await fs.comprobantes.calcular([{ descripcion: 'X', cantidad: 1, valor_unitario: 1, afectacion: '10' }])
+  assert.equal(fetch.llamadas.length, 3)
+})
+
+test('catalogos.listar y catalogos.consultar: GET con q y ruc en la query, nombre codificado', async () => {
+  const { fs, fetch } = cliente([{ cuerpo: { success: true, catalogos: [] } }, { cuerpo: { success: true, datos: [] } }, { cuerpo: { success: true, datos: [] } }])
+  await fs.catalogos.listar()
+  assert.equal(fetch.llamadas[0].init.method, 'GET')
+  assert.equal(fetch.llamadas[0].url, `${BASE}/catalogos?ruc=20123456789`)
+
+  await fs.catalogos.consultar('unidades', { q: 'kilo', ruc: '20999999999' })
+  const u = new URL(fetch.llamadas[1].url)
+  assert.equal(u.pathname, '/api/v1/issuer/catalogos/unidades')
+  assert.equal(u.searchParams.get('q'), 'kilo')
+  assert.equal(u.searchParams.get('ruc'), '20999999999')
+
+  await fs.catalogos.consultar('a/b c')
+  assert.ok(fetch.llamadas[2].url.startsWith(`${BASE}/catalogos/a%2Fb%20c?`), fetch.llamadas[2].url)
+
+  await assert.rejects(fs.catalogos.consultar(''), FactuSmartError)
+})
+
+test('catalogos.consultar: 404 → NoEncontrado con catalogos_disponibles en la respuesta', async () => {
+  const cuerpo = { success: false, message: 'Catálogo "x" no existe.', codigo: 'NO_ENCONTRADO', reintentable: false, catalogos_disponibles: ['unidades'] }
+  const { fs, fetch } = cliente([{ status: 404, cuerpo }])
+  await assert.rejects(fs.catalogos.consultar('x'), (e) => e instanceof NoEncontrado && e.respuesta.catalogos_disponibles[0] === 'unidades')
+  assert.equal(fetch.llamadas.length, 1)
+})
+
+test('anulaciones: ANULACION_MIXTA → ErrorDeValidacion sin reintento; la respuesta trae tipo e identificador tal cual', async () => {
+  const mixta = { success: false, message: 'No se pueden anular facturas y boletas en la misma petición.', codigo: 'ANULACION_MIXTA', reintentable: false }
+  const datos = { fecha_de_emision_de_documentos: '14-10-2026', documentos: [{ external_id: 'a', motivo_anulacion: 'x' }] }
+  const m = cliente([{ status: 422, cuerpo: mixta }])
+  await assert.rejects(m.fs.anulaciones.crear(datos), (e) => e instanceof ErrorDeValidacion && e.codigo === 'ANULACION_MIXTA')
+  assert.equal(m.fetch.llamadas.length, 1)
+
+  const ok = { success: true, message: 'ok', tipo: 'resumen', ticket: '1', external_id: 'e', identificador: 'RC-20261014-1', creditos_restantes: 5, credito_cobrado: false, modo_demo: true, pruebas_restantes_hoy: 197 }
+  const { fs, fetch } = cliente([{ cuerpo: ok }])
+  assert.deepEqual(await fs.anulaciones.crear(datos), ok)
+  assert.equal(fetch.llamadas[0].cuerpo.ruc, '20123456789')
+})
+
+test('CODIGOS_DE_ERROR incluye los códigos nuevos', () => {
+  for (const c of ['LIMITE_PRUEBAS_DIARIO', 'ANULACION_MIXTA', 'LLAVE_DE_PRUEBA_EN_PRODUCCION']) assert.ok(CODIGOS_DE_ERROR.includes(c), c)
+})
+
 // ───────────── Webhooks ─────────────
 
 // Vector común de los tres SDK: no cambiarlo.

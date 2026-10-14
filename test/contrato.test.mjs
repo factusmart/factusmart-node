@@ -27,6 +27,9 @@ export const METODOS = {
   listRucs: 'rucs.listar',
   createRuc: 'rucs.crear',
   setRucActivation: 'rucs.activar',
+  calculateDocument: 'comprobantes.calcular',
+  listCatalogs: 'catalogos.listar',
+  getCatalog: 'catalogos.consultar',
   // Webhook (sección `webhooks` del yaml): lo manda el API; el SDK solo verifica la firma (método estático).
   webhookComprobanteEstado: 'FactuSmart.verificarFirmaWebhook',
 }

@@ -17,8 +17,14 @@ import type {
   FiltrosComprobantes,
   ItemComprobante,
   ItemParaCalcular,
+  ItemParaCalcularEnServidor,
+  OpcionesCalculo,
+  OpcionesCatalogo,
   OpcionesEmision,
   OpcionesRuc,
+  RespuestaCalculo,
+  RespuestaCatalogo,
+  RespuestaCatalogos,
   RespuestaActivacionRuc,
   RespuestaAnulacion,
   RespuestaComprobante,
@@ -249,10 +255,29 @@ export class FactuSmart {
     consultarSunat: (externalId: string, opciones?: OpcionesRuc) => Promise<RespuestaConsultaSunat>
     /** GET /documents/{external_id}/historial */
     historial: (externalId: string, opciones?: OpcionesRuc) => Promise<RespuestaHistorial>
+    /**
+     * POST /calcular — FactuSmart calcula `items` y `totales` listos para `emitir`. No emite ni cobra
+     * crédito. Admite `precio_unitario` (con IGV) y `porcentaje_igv` 10.5 (Ley 31556). Para hacerlo
+     * sin petición (solo `valor_unitario` y 18 %) usa `FactuSmart.calcularComprobante`.
+     */
+    calcular: (items: ItemParaCalcularEnServidor[], opciones?: OpcionesCalculo) => Promise<RespuestaCalculo>
+  }
+
+  readonly catalogos: {
+    /** GET /catalogos — catálogos SUNAT disponibles. No consume crédito. */
+    listar: (opciones?: OpcionesRuc) => Promise<RespuestaCatalogos>
+    /**
+     * GET /catalogos/{nombre} — filas de un catálogo. `nombre` = `unidades` o el número SUNAT (`03`).
+     * Usa solo las filas con `activo: true`.
+     */
+    consultar: (nombre: string, opciones?: OpcionesCatalogo) => Promise<RespuestaCatalogo>
   }
 
   readonly anulaciones: {
-    /** POST /anulaciones — comunicación de baja. No se reintenta automáticamente. */
+    /**
+     * POST /anulaciones — facturas (comunicación de baja, `tipo: 'baja'`) o boletas aceptadas
+     * (resumen diario, `tipo: 'resumen'`); no mezcles las dos (422 ANULACION_MIXTA). No se reintenta.
+     */
     crear: (datos: DatosAnulacion, opciones?: OpcionesRuc) => Promise<RespuestaAnulacion>
     /** GET /anulaciones/{ticket}/status */
     estado: (ticket: string, opciones?: OpcionesRuc) => Promise<RespuestaEstadoAnulacion>
@@ -344,6 +369,30 @@ export class FactuSmart {
         }),
       historial: (externalId, o) =>
         this.peticion({ metodo: 'GET', ruta: `/documents/${id(externalId)}/historial`, query: { ruc: this.rucDe(o) }, reintentable: true }),
+      // POST sin efectos (no emite ni cobra): se reintenta como un GET. No lleva `ruc` (el API lo ignora).
+      calcular: (items, o) => {
+        if (!Array.isArray(items) || items.length === 0) {
+          return Promise.reject(new FactuSmartError('comprobantes.calcular(items): pasa una lista con al menos un ítem.'))
+        }
+        const cuerpo: Record<string, unknown> = { items }
+        if (o?.porcentaje_igv !== undefined && o.porcentaje_igv !== null) cuerpo.porcentaje_igv = o.porcentaje_igv
+        return this.peticion({ metodo: 'POST', ruta: '/calcular', cuerpo, reintentable: true })
+      },
+    }
+
+    this.catalogos = {
+      listar: (o) => this.peticion({ metodo: 'GET', ruta: '/catalogos', query: { ruc: this.rucDe(o) }, reintentable: true }),
+      consultar: (nombre, o) => {
+        if (typeof nombre !== 'string' || nombre.trim() === '') {
+          return Promise.reject(new FactuSmartError('catalogos.consultar(nombre): pasa el nombre (ej. "unidades") o el número SUNAT (ej. "03").'))
+        }
+        return this.peticion({
+          metodo: 'GET',
+          ruta: `/catalogos/${encodeURIComponent(nombre.trim())}`,
+          query: { q: o?.q, ruc: this.rucDe(o) },
+          reintentable: true,
+        })
+      },
     }
 
     this.anulaciones = {
@@ -552,15 +601,18 @@ export class FactuSmart {
         }
         const error = construirError(respuesta.status, cuerpo, respuesta.headers)
 
+        // `reintentable: false` en el cuerpo manda sobre la regla por HTTP (ej. 429 LIMITE_PRUEBAS_DIARIO).
+        // Sin el campo (servidor anterior), `error.reintentable` es null y se usa la regla por HTTP.
         const transitorio =
-          error instanceof LimiteDePeticiones ||
-          respuesta.status === 502 ||
-          respuesta.status === 503 ||
-          respuesta.status === 504 ||
-          (respuesta.status === 409 && p.reintentarEn409 === true) ||
-          // Señal adicional del API (ej. 500 ERROR_INTERNO, SUNAT_NO_DISPONIBLE). Solo cuenta en
-          // operaciones reintentables: en las demás maxIntentos es 1 y `quedan` siempre es false.
-          error.reintentable === true
+          error.reintentable !== false &&
+          (error instanceof LimiteDePeticiones ||
+            respuesta.status === 502 ||
+            respuesta.status === 503 ||
+            respuesta.status === 504 ||
+            (respuesta.status === 409 && p.reintentarEn409 === true) ||
+            // Señal adicional del API (ej. 500 ERROR_INTERNO, SUNAT_NO_DISPONIBLE). Solo cuenta en
+            // operaciones reintentables: en las demás maxIntentos es 1 y `quedan` siempre es false.
+            error.reintentable === true)
         if (transitorio && quedan) {
           await espera(error instanceof LimiteDePeticiones ? error.segundosDeEspera : null)
           continue

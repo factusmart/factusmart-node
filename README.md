@@ -1,8 +1,8 @@
 # factusmart — SDK de Node.js / TypeScript
 
 SDK oficial del API de facturación electrónica de **FactuSmart** (SUNAT, Perú): emite facturas,
-boletas, notas de crédito/débito, guías de remisión (GRE 2.0) y comunicaciones de baja, y descarga
-el PDF, el XML firmado y el CDR.
+boletas, notas de crédito/débito y guías de remisión (GRE 2.0), anula facturas y boletas, calcula el
+IGV y los totales, consulta los catálogos SUNAT, y descarga el PDF, el XML firmado y el CDR.
 
 - Node.js 18 o superior. **Cero dependencias**: usa `fetch` nativo y `crypto.randomUUID`.
 - ESM y CommonJS, con tipos TypeScript incluidos.
@@ -82,8 +82,11 @@ Los **datos** se envían y se reciben tal cual los define el API (claves en espa
 | `fs.comprobantes.reenviar(externalId, opciones?)` | `POST /documents/{id}/reenviar` | objeto |
 | `fs.comprobantes.consultarSunat(externalId, opciones?)` | `POST /documents/{id}/consultar-sunat` | objeto |
 | `fs.comprobantes.historial(externalId, opciones?)` | `GET /documents/{id}/historial` | objeto |
-| `fs.anulaciones.crear(datos, opciones?)` | `POST /anulaciones` | objeto (`ticket`) |
-| `fs.anulaciones.estado(ticket, opciones?)` | `GET /anulaciones/{ticket}/status` | objeto |
+| `fs.comprobantes.calcular(items, { porcentaje_igv }?)` | `POST /calcular` | objeto (`items`, `totales`) |
+| `fs.anulaciones.crear(datos, opciones?)` | `POST /anulaciones` | objeto (`tipo`, `identificador`, `ticket`) |
+| `fs.anulaciones.estado(ticket, opciones?)` | `GET /anulaciones/{ticket}/status` | objeto (`tipo`, `estado`, `documentos`) |
+| `fs.catalogos.listar(opciones?)` | `GET /catalogos` | objeto (`catalogos`, `nota`) |
+| `fs.catalogos.consultar(nombre, { q, ruc }?)` | `GET /catalogos/{nombre}` | objeto (`catalogo`, `total`, `datos`) |
 | `fs.guias.emitir(datos, opciones?)` | `POST /guias` | objeto (revisa `enviado`) |
 | `fs.guias.estado(externalId, opciones?)` | `GET /guias/{id}/status` | objeto |
 | `fs.rucs.listar()` | `GET /rucs` | objeto |
@@ -107,6 +110,66 @@ writeFileSync('comprobante.pdf', await fs.comprobantes.descargar(r.external_id, 
 ```
 
 El CDR solo existe cuando SUNAT respondió; si no existe, se lanza `NoEncontrado`.
+
+### Anular facturas y boletas
+
+`anulaciones.crear` sirve para las dos; el API elige el camino según lo que mandes:
+
+| Mandas | SUNAT lo anula con | `tipo` | `identificador` |
+|---|---|---|---|
+| Facturas y sus notas | Comunicación de baja | `baja` | `RA-AAAAMMDD-N` |
+| Boletas y sus notas (solo **aceptadas**, estado `05`) | Resumen diario | `resumen` | `RC-AAAAMMDD-N` |
+| Las dos cosas juntas | — | `422` `ANULACION_MIXTA` (`ErrorDeValidacion`) | — |
+
+```js
+const a = await fs.anulaciones.crear({
+  fecha_de_emision_de_documentos: '14-10-2026', // DD-MM-AAAA, la de emisión de los comprobantes
+  documentos: [{ external_id: r.external_id, motivo_anulacion: 'Error en el comprobante' }],
+})
+console.log(a.tipo, a.identificador, a.ticket) // 'resumen' 'RC-20261014-1' '1792012278669'
+const e = await fs.anulaciones.estado(a.ticket) // e.estado '05' = aceptada; e.documentos[i].estado '11' = anulado
+```
+
+La respuesta trae también `creditos_restantes` y `credito_cobrado` (y en RUCs demo `modo_demo` y
+`pruebas_restantes_hoy`). Haz una petición para las facturas y otra para las boletas.
+`anulaciones.crear` nunca se reintenta automáticamente.
+
+### Catálogos SUNAT
+
+```js
+const { catalogos } = await fs.catalogos.listar() // unidades, afectacion-igv, monedas, ...
+const { datos } = await fs.catalogos.consultar('unidades', { q: 'kilo' }) // o por número: consultar('03')
+const activas = datos.filter((f) => f.activo) // usa solo las filas activas: el RUC valida contra ellas
+```
+
+`consultar` lee el catálogo del RUC (`ruc` de la llamada o del constructor). Un nombre que no existe
+lanza `NoEncontrado` (la lista válida viene en `e.respuesta.catalogos_disponibles`).
+
+## ¿Calcular en el servidor o local?
+
+| | `fs.comprobantes.calcular(items, opciones?)` | `FactuSmart.calcularComprobante(items)` |
+|---|---|---|
+| Dónde | En FactuSmart (`POST /calcular`) | En tu proceso, sin petición |
+| Precio | `valor_unitario` (sin IGV) **o** `precio_unitario` (con IGV) | Solo `valor_unitario` (sin IGV) |
+| IGV | 18 % o 10.5 % (`{ porcentaje_igv: 10.5 }`, Ley 31556, restaurantes y hoteles MYPE acogidos) | Solo 18 % |
+| Costo | No emite ni cobra crédito (ni manda `ruc`) | Cero peticiones |
+
+Para lo que soportan los dos, dan **los mismos números** al centavo.
+
+- Usa `comprobantes.calcular` si tus precios incluyen IGV, si aplicas la tasa 10.5 % o si prefieres
+  que el cálculo lo haga siempre FactuSmart. Con `precio_unitario` se respeta lo que paga el cliente:
+  3 menús de S/ 10.00 suman S/ 30.00 (no S/ 29.99).
+- Usa `calcularComprobante` si tus precios son sin IGV al 18 % y no quieres una petición extra.
+
+```js
+const { items, totales } = await fs.comprobantes.calcular([
+  { descripcion: 'Menú', cantidad: 3, precio_unitario: 10, afectacion: '10', unidad_de_medida: 'ZZ' },
+])
+await fs.comprobantes.emitir({ codigo_tipo_documento: '03', datos_del_cliente_o_receptor: cliente, items, totales })
+```
+
+Los errores de `comprobantes.calcular` vienen por ítem en `e.campos` (clave `items.N.campo`). Al no
+tener efectos, se reintenta igual que un GET.
 
 ## `calcularComprobante(items)`
 
@@ -170,8 +233,26 @@ Códigos más comunes (lista completa en `CODIGOS_DE_ERROR`; el API puede agrega
 | `EMISION_EN_CURSO` | Ya hay una emisión con esa `Idempotency-Key` en proceso |
 | `RECHAZADO_SUNAT` / `ERROR_EMISION` | SUNAT rechazó o falló la emisión |
 | `SUNAT_NO_DISPONIBLE` | SUNAT no responde (reintentable) |
-| `LIMITE_PETICIONES` | Demasiadas peticiones |
+| `LIMITE_PETICIONES` | Demasiadas peticiones por minuto (reintentable) |
+| `LIMITE_PRUEBAS_DIARIO` | 429 **no reintentable**: tope de 200 operaciones/día en RUCs demo |
+| `ANULACION_MIXTA` | Facturas y boletas en la misma anulación (422) |
+| `LLAVE_DE_PRUEBA_EN_PRODUCCION` | Llave de prueba usada con un RUC en producción (403) |
 | `ERROR_INTERNO` | Error del servidor |
+
+### RUCs demo: sin costo, con tope diario
+
+En un RUC en modo demo (pruebas, SUNAT beta, sin validez fiscal) **no se cobra crédito**: las respuestas
+traen `credito_cobrado: false`, `modo_demo: true` y `pruebas_restantes_hoy`, y `creditos_restantes` no
+baja. A cambio hay un tope de **200 operaciones por día por cuenta**; al llegar, el API responde 429
+con `codigo: 'LIMITE_PRUEBAS_DIARIO'` y `reintentable: false`. El SDK lanza `LimiteDePeticiones` tras
+**una sola** petición (no reintenta: el cupo se reinicia a medianoche, hora de Perú). Distínguelo del
+límite por minuto con `e.codigo`, no con la clase:
+
+```js
+catch (e) {
+  if (e.codigo === 'LIMITE_PRUEBAS_DIARIO') console.log('Se acabaron las pruebas de hoy')
+}
+```
 
 ## Verificar webhooks
 
@@ -206,9 +287,13 @@ en tiempo constante y nunca lanza: si la firma o el secreto faltan o están mal 
 - Se reintenta solo ante: error de red/timeout, 429, 502, 503, 504 y, en
   `emitir`, 409 ("emisión en curso con esa clave"). Espera creciente: 1 s, 2 s, 4 s… Ante límite de
   peticiones se respeta `Retry-After` o el "Espera N segundos" del mensaje.
-- Se reintentan: todos los GET, `comprobantes.emitir` y `rucs.crear` (idempotente por RUC). En
+- Se reintentan: todos los GET, `comprobantes.emitir`, `comprobantes.calcular` (no tiene efectos) y
+  `rucs.crear` (idempotente por RUC). En
   estas operaciones también se reintenta cuando el API responde `reintentable: true` (ej.
   `ERROR_INTERNO`, `SUNAT_NO_DISPONIBLE`), con el mismo tope y la misma espera.
+- **`reintentable: false` manda:** si el cuerpo del error trae `reintentable: false`, no se reintenta
+  nunca, aunque el HTTP sea 429, 409, 502, 503 o 504 (caso real: 429 `LIMITE_PRUEBAS_DIARIO`). Si el
+  cuerpo no trae `reintentable` (servidor de versión anterior), se usa la regla por HTTP de arriba.
 - **Nunca** se reintentan automáticamente: `anulaciones.crear`, `guias.emitir` (no acepta
   `Idempotency-Key`), `comprobantes.reenviar`, `comprobantes.consultarSunat`, `rucs.activar`,
   aunque el API responda `reintentable: true`.
@@ -230,7 +315,7 @@ npm install
 npm run typecheck     # tsc --noEmit
 npm run build         # dist/ en ESM + CJS + .d.ts
 npm run test:unit     # sin red (fetch falso) + prueba de contrato contra openapi.yaml
-npm test              # todo, incluido el API local https://factusmart.test (gasta 2 créditos)
+npm test              # todo, incluido el API local https://factusmart.test (máx. 3 emisiones demo, sin costo)
 ```
 
 Las pruebas del API local usan las variables `FACTUSMART_BASE_URL`, `FACTUSMART_API_KEY`,
