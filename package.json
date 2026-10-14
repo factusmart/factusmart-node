@@ -1,0 +1,58 @@
+{
+  "name": "factusmart",
+  "version": "1.0.0",
+  "description": "SDK oficial de Node.js / TypeScript para el API de facturación electrónica de FactuSmart (SUNAT, Perú).",
+  "keywords": [
+    "factusmart",
+    "sunat",
+    "facturacion electronica",
+    "factura",
+    "boleta",
+    "peru",
+    "cpe",
+    "ubl"
+  ],
+  "license": "MIT",
+  "author": "FactuSmart",
+  "homepage": "https://factusmart.pe/api-facturacion-electronica/docs",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "caso-comun": "node scripts/caso-comun.mjs",
+    "test:unit": "npm run build && npm run caso-comun && node --test test/unit.test.mjs test/contrato.test.mjs",
+    "test:api": "npm run build && node scripts/con-api-local.mjs --test --test-concurrency=1 test/api.test.mjs",
+    "test": "npm run build && npm run caso-comun && node scripts/con-api-local.mjs --test --test-concurrency=1 test/unit.test.mjs test/contrato.test.mjs test/api.test.mjs",
+    "prepublishOnly": "npm run typecheck && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3"
+  }
+}
