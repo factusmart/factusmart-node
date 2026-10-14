@@ -27,6 +27,8 @@ export const METODOS = {
   listRucs: 'rucs.listar',
   createRuc: 'rucs.crear',
   setRucActivation: 'rucs.activar',
+  // Webhook (sección `webhooks` del yaml): lo manda el API; el SDK solo verifica la firma (método estático).
+  webhookComprobanteEstado: 'FactuSmart.verificarFirmaWebhook',
 }
 
 test('contrato: todos los operationId del openapi.yaml tienen método en el SDK', { skip: !existsSync(RUTA_YAML) && `no existe ${RUTA_YAML}` }, () => {
@@ -42,7 +44,9 @@ test('contrato: todos los operationId del openapi.yaml tienen método en el SDK'
       faltan.push(`${id} (sin método asignado en el SDK)`)
       continue
     }
-    const fn = ruta.split('.').reduce((o, k) => (o == null ? undefined : o[k]), fs)
+    // 'FactuSmart.x' = método estático de la clase; lo demás, método de una instancia.
+    const [raiz, partes] = ruta.startsWith('FactuSmart.') ? [FactuSmart, ruta.split('.').slice(1)] : [fs, ruta.split('.')]
+    const fn = partes.reduce((o, k) => (o == null ? undefined : o[k]), raiz)
     if (typeof fn !== 'function') faltan.push(`${id} → ${ruta} (no existe)`)
   }
   assert.deepEqual(faltan, [], `operationId sin método en el SDK:\n  ${faltan.join('\n  ')}`)

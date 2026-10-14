@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import { calcularComprobante } from './calculo.js'
 import {
   ErrorDeAutenticacion,
@@ -39,7 +39,7 @@ import type {
   Totales,
 } from './tipos.js'
 
-export const VERSION = '1.0.0'
+export const VERSION = '1.1.0'
 
 type FuncionFetch = (url: string, init?: Record<string, unknown>) => Promise<Response>
 
@@ -153,7 +153,8 @@ function construirError(status: number, cuerpo: unknown, cabeceras: Headers): Fa
   }
 
   // El API actual convierte el 429 del limitador en un 500 "Too Many Attempts." (ver openapi.yaml).
-  const esLimite = status === 429 || (status === 500 && /too many attempts/i.test(mensaje))
+  const codigo = esObjeto(cuerpo) && typeof cuerpo.codigo === 'string' ? cuerpo.codigo : null
+  const esLimite = status === 429 || codigo === 'LIMITE_PETICIONES' || (status === 500 && /too many attempts/i.test(mensaje))
   if (esLimite) {
     return new LimiteDePeticiones(mensaje, status, cuerpo, leerSegundosDeEspera(cabeceras.get('retry-after'), mensaje))
   }
@@ -173,8 +174,39 @@ function construirError(status: number, cuerpo: unknown, cabeceras: Headers): Fa
   }
 }
 
+const FIRMA_HEX = /^[0-9a-f]{64}$/
+
+/**
+ * Verifica la firma de un webhook de FactuSmart (header `X-FactuSmart-Firma`): HMAC-SHA256, en hex
+ * minúscula, del cuerpo CRUDO de la petición con el secreto del webhook, sin prefijo.
+ *
+ * Usa el cuerpo tal como llegó (string o Buffer), nunca un JSON re-serializado: cualquier espacio u
+ * orden distinto cambia la firma. Nunca lanza: ante datos vacíos o mal formados devuelve `false`.
+ */
+export function verificarFirmaWebhook(cuerpoCrudo: string | Buffer | Uint8Array, firma: string, secreto: string): boolean {
+  try {
+    if (typeof firma !== 'string' || typeof secreto !== 'string' || secreto === '') return false
+    const recibida = firma.trim().toLowerCase()
+    if (!FIRMA_HEX.test(recibida)) return false
+    let cuerpo: Buffer
+    if (typeof cuerpoCrudo === 'string') cuerpo = Buffer.from(cuerpoCrudo, 'utf8')
+    else if (cuerpoCrudo instanceof Uint8Array) cuerpo = Buffer.from(cuerpoCrudo.buffer, cuerpoCrudo.byteOffset, cuerpoCrudo.byteLength)
+    else return false
+    const esperada = createHmac('sha256', secreto).update(cuerpo).digest()
+    const dada = Buffer.from(recibida, 'hex')
+    return dada.length === esperada.length && timingSafeEqual(dada, esperada)
+  } catch {
+    return false
+  }
+}
+
 export class FactuSmart {
   static readonly VERSION = VERSION
+
+  /** Verifica el header `X-FactuSmart-Firma` de un webhook. Ver `verificarFirmaWebhook`. */
+  static verificarFirmaWebhook(cuerpoCrudo: string | Buffer | Uint8Array, firma: string, secreto: string): boolean {
+    return verificarFirmaWebhook(cuerpoCrudo, firma, secreto)
+  }
 
   /** Calcula `items` y `totales` listos para `comprobantes.emitir`. */
   static calcularComprobante(items: ItemParaCalcular[]): { items: ItemComprobante[]; totales: Totales } {
@@ -516,7 +548,7 @@ export class FactuSmart {
         try {
           cuerpo = JSON.parse(texto)
         } catch {
-          /* p. ej. la página HTML 404 de las descargas */
+          /* no es JSON (p. ej. una página HTML de un proxy o de un servidor de versión anterior) */
         }
         const error = construirError(respuesta.status, cuerpo, respuesta.headers)
 
@@ -525,7 +557,10 @@ export class FactuSmart {
           respuesta.status === 502 ||
           respuesta.status === 503 ||
           respuesta.status === 504 ||
-          (respuesta.status === 409 && p.reintentarEn409 === true)
+          (respuesta.status === 409 && p.reintentarEn409 === true) ||
+          // Señal adicional del API (ej. 500 ERROR_INTERNO, SUNAT_NO_DISPONIBLE). Solo cuenta en
+          // operaciones reintentables: en las demás maxIntentos es 1 y `quedan` siempre es false.
+          error.reintentable === true
         if (transitorio && quedan) {
           await espera(error instanceof LimiteDePeticiones ? error.segundosDeEspera : null)
           continue

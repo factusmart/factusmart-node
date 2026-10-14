@@ -125,8 +125,15 @@ Redondeo a 2 decimales por ítem, "mitad hacia arriba", sin el error de coma flo
 
 ## Errores
 
-Todos heredan de `FactuSmartError` y traen `status` (HTTP; `0` si fue red/timeout), `mensaje` (el
-`message` del API) y `respuesta` (el cuerpo completo).
+Todos heredan de `FactuSmartError` y traen:
+
+- `status`: HTTP (`0` si fue red/timeout).
+- `mensaje`: el `message` del API. `respuesta`: el cuerpo completo.
+- `codigo`: código estable del error, en MAYÚSCULAS (ej. `DATOS_INVALIDOS`). Úsalo en tu lógica en
+  vez de comparar textos. `null` si fue red/timeout o si el servidor es de una versión anterior.
+- `reintentable`: `true` si repetir la misma petición más tarde puede funcionar. `null` si el API no
+  lo mandó (servidor de versión anterior, red, timeout).
+- `campos`: errores por campo, ej. `{ "items.0.cantidad": ["..."] }` (sobre todo en 422). `{}` si no hay.
 
 | HTTP | Clase | Cuándo |
 |---|---|---|
@@ -134,7 +141,7 @@ Todos heredan de `FactuSmartError` y traen `status` (HTTP; `0` si fue red/timeou
 | 402 | `SinCreditos` | Sin créditos; no se emitió nada |
 | 403 | `RucNoAutorizado` | El RUC no es de tu cuenta o está desactivado |
 | 404 | `NoEncontrado` | Comprobante, guía, ticket o archivo inexistente |
-| 422 | `ErrorDeValidacion` | Datos inválidos; el crédito no se cobra. `errores` trae el mapa campo → mensajes si el API lo envía |
+| 422 | `ErrorDeValidacion` | Datos inválidos; el crédito no se cobra. Revisa `campos` (`errores` se mantiene por compatibilidad) |
 | 429 | `LimiteDePeticiones` | Límite de peticiones; `segundosDeEspera` si se pudo leer |
 | otros / red | `FactuSmartError` | |
 
@@ -143,11 +150,52 @@ import { ErrorDeValidacion, SinCreditos } from 'factusmart'
 try {
   await fs.comprobantes.emitir(datos)
 } catch (e) {
-  if (e instanceof ErrorDeValidacion) console.log('Corrige el JSON:', e.mensaje)
+  if (e instanceof ErrorDeValidacion) console.log('Corrige el JSON:', e.mensaje, e.campos)
   else if (e instanceof SinCreditos) console.log('Recarga créditos')
+  else if (e.codigo === 'PLAN_VENCIDO') console.log('Renueva tu plan')
   else throw e
 }
 ```
+
+Códigos más comunes (lista completa en `CODIGOS_DE_ERROR`; el API puede agregar otros y manda
+`ERROR_<status>` como genérico, así que no asumas una lista cerrada):
+
+| `codigo` | Qué pasó |
+|---|---|
+| `NO_AUTENTICADO` | API key inválida o cuenta desactivada |
+| `PLAN_VENCIDO` / `SIN_CREDITOS` | Plan vencido o sin créditos |
+| `RUC_NO_AUTORIZADO` / `RUC_DESACTIVADO` | El RUC no es de tu cuenta o está desactivado |
+| `NO_ENCONTRADO` | Comprobante, guía, ticket o archivo inexistente |
+| `DATOS_INVALIDOS` | Validación; detalle en `campos` |
+| `EMISION_EN_CURSO` | Ya hay una emisión con esa `Idempotency-Key` en proceso |
+| `RECHAZADO_SUNAT` / `ERROR_EMISION` | SUNAT rechazó o falló la emisión |
+| `SUNAT_NO_DISPONIBLE` | SUNAT no responde (reintentable) |
+| `LIMITE_PETICIONES` | Demasiadas peticiones |
+| `ERROR_INTERNO` | Error del servidor |
+
+## Verificar webhooks
+
+FactuSmart firma cada webhook con el header `X-FactuSmart-Firma`: HMAC-SHA256 (hex) del cuerpo
+**crudo** con tu secreto. Verifica con el cuerpo tal como llegó, **nunca** con `JSON.stringify(req.body)`:
+un JSON re-serializado cambia espacios u orden y la firma ya no coincide.
+
+```js
+import express from 'express'
+import { verificarFirmaWebhook } from 'factusmart' // o FactuSmart.verificarFirmaWebhook
+
+const app = express()
+app.post('/webhooks/factusmart', express.raw({ type: 'application/json' }), (req, res) => {
+  if (!verificarFirmaWebhook(req.body, req.get('x-factusmart-firma'), process.env.FACTUSMART_WEBHOOK_SECRETO)) {
+    return res.sendStatus(401)
+  }
+  const evento = JSON.parse(req.body.toString('utf8'))
+  // ... procesa evento
+  res.sendStatus(200)
+})
+```
+
+`verificarFirmaWebhook(cuerpoCrudo, firma, secreto)` acepta string, `Buffer` o `Uint8Array`, compara
+en tiempo constante y nunca lanza: si la firma o el secreto faltan o están mal formados, devuelve `false`.
 
 
 ## Reintentos e idempotencia
@@ -158,9 +206,12 @@ try {
 - Se reintenta solo ante: error de red/timeout, 429, 502, 503, 504 y, en
   `emitir`, 409 ("emisión en curso con esa clave"). Espera creciente: 1 s, 2 s, 4 s… Ante límite de
   peticiones se respeta `Retry-After` o el "Espera N segundos" del mensaje.
-- Se reintentan: todos los GET, `comprobantes.emitir` y `rucs.crear` (idempotente por RUC).
+- Se reintentan: todos los GET, `comprobantes.emitir` y `rucs.crear` (idempotente por RUC). En
+  estas operaciones también se reintenta cuando el API responde `reintentable: true` (ej.
+  `ERROR_INTERNO`, `SUNAT_NO_DISPONIBLE`), con el mismo tope y la misma espera.
 - **Nunca** se reintentan automáticamente: `anulaciones.crear`, `guias.emitir` (no acepta
-  `Idempotency-Key`), `comprobantes.reenviar`, `comprobantes.consultarSunat`, `rucs.activar`.
+  `Idempotency-Key`), `comprobantes.reenviar`, `comprobantes.consultarSunat`, `rucs.activar`,
+  aunque el API responda `reintentable: true`.
 
 ## Pruebas locales con certificado propio (`verificarSsl: false`)
 

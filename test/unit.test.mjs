@@ -16,6 +16,8 @@ import FactuSmartDefault, {
   NoEncontrado,
   ErrorDeValidacion,
   LimiteDePeticiones,
+  verificarFirmaWebhook,
+  CODIGOS_DE_ERROR,
 } from '../dist/index.js'
 
 const BASE = 'https://api.ejemplo.test/api/v1/issuer'
@@ -302,7 +304,7 @@ test('HTTP 200 con aceptado_por_sunat=false NO lanza: se devuelve tal cual', asy
 
 // ───────────── Descargas ─────────────
 
-test('descargar devuelve un Buffer; 404 en HTML → NoEncontrado; tipo inválido → error', async () => {
+test('descargar devuelve un Buffer; 404 en HTML (servidor anterior) → NoEncontrado; tipo inválido → error', async () => {
   const pdf = '%PDF-1.4 falso'
   const { fs, fetch } = cliente([{ cuerpo: pdf, cabeceras: { 'Content-Type': 'application/pdf' } }])
   const b = await fs.comprobantes.descargar('abc', 'pdf')
@@ -373,4 +375,164 @@ test('calcularComprobante valida la entrada', () => {
   const r = calcularComprobante([{ descripcion: 'X', cantidad: 2, valor_unitario: 3, afectacion: '10', codigo_interno: 'SKU1', unidad_de_medida: 'ZZ' }])
   assert.equal(r.items[0].codigo_interno, 'SKU1')
   assert.equal(r.items[0].unidad_de_medida, 'ZZ')
+})
+
+// ───────────── codigo / reintentable / campos (API 2026-10) ─────────────
+
+test('el error expone codigo, reintentable y campos del cuerpo JSON', async () => {
+  const cuerpo = {
+    success: false,
+    message: 'Datos del comprobante inválidos o incompletos.',
+    codigo: 'DATOS_INVALIDOS',
+    reintentable: false,
+    campos: { 'items.0.cantidad': ['La cantidad debe ser mayor que 0.'], serie_documento: ['Serie inexistente.'] },
+  }
+  const { fs } = cliente([{ status: 422, cuerpo }])
+  await assert.rejects(fs.comprobantes.emitir(DATOS()), (e) => {
+    assert.ok(e instanceof ErrorDeValidacion)
+    assert.equal(e.codigo, 'DATOS_INVALIDOS')
+    assert.equal(e.reintentable, false)
+    assert.deepEqual(e.campos, cuerpo.campos)
+    assert.deepEqual(e.errores, cuerpo.campos, 'errores (compatibilidad) se llena con campos')
+    assert.equal(e.mensaje, cuerpo.message)
+    return true
+  })
+
+  const { fs: fs2 } = cliente([{ status: 401, cuerpo: { success: false, message: 'API key inválida.', codigo: 'NO_AUTENTICADO', reintentable: false } }])
+  await assert.rejects(fs2.ping(), (e) => {
+    assert.ok(e instanceof ErrorDeAutenticacion)
+    assert.equal(e.codigo, 'NO_AUTENTICADO')
+    assert.equal(e.reintentable, false)
+    assert.deepEqual(e.campos, {})
+    return true
+  })
+  assert.ok(CODIGOS_DE_ERROR.includes('SUNAT_NO_DISPONIBLE'))
+})
+
+test('servidor de versión anterior (sin codigo): codigo y reintentable null, campos {}', async () => {
+  const { fs } = cliente([{ status: 404, cuerpo: { success: false, message: 'Comprobante no encontrado.' } }])
+  await assert.rejects(fs.comprobantes.consultar('abc'), (e) => {
+    assert.ok(e instanceof NoEncontrado)
+    assert.equal(e.codigo, null)
+    assert.equal(e.reintentable, null)
+    assert.deepEqual(e.campos, {})
+    return true
+  })
+  // Errores de red tampoco traen código
+  const red = cliente([new TypeError('fetch failed')], { maxReintentos: 0 })
+  await assert.rejects(red.fs.ping(), (e) => e.codigo === null && e.reintentable === null && Object.keys(e.campos).length === 0)
+})
+
+test('reintentable:true reintenta en operaciones reintentables (GET, emitir con la misma clave, rucs.crear)', async () => {
+  const fallo = { status: 500, cuerpo: { success: false, message: 'Error interno.', codigo: 'ERROR_INTERNO', reintentable: true } }
+
+  const g = cliente([fallo, { cuerpo: { success: true, series: [] } }])
+  await g.fs.series.listar()
+  assert.equal(g.fetch.llamadas.length, 2)
+
+  const em = cliente([
+    { status: 500, cuerpo: { success: false, message: 'SUNAT no responde.', codigo: 'SUNAT_NO_DISPONIBLE', reintentable: true } },
+    { cuerpo: EMISION_OK },
+  ])
+  await em.fs.comprobantes.emitir(DATOS())
+  assert.equal(em.fetch.llamadas.length, 2)
+  assert.equal(em.fetch.llamadas[0].cabeceras['Idempotency-Key'], em.fetch.llamadas[1].cabeceras['Idempotency-Key'])
+
+  const rc = cliente([fallo, { cuerpo: { success: true, ya_existia: true } }])
+  await rc.fs.rucs.crear({ ruc: '20609999991', empresa: 'X', correo: 'a@b.pe', clave: '123456' })
+  assert.equal(rc.fetch.llamadas.length, 2)
+
+  // Respeta maxReintentos y el backoff
+  const tope = cliente([fallo], { maxReintentos: 2 })
+  await assert.rejects(tope.fs.cuenta.saldo(), (e) => e.codigo === 'ERROR_INTERNO' && e.reintentable === true)
+  assert.equal(tope.fetch.llamadas.length, 3)
+  assert.deepEqual(tope.esperas, [1000, 2000])
+
+  // Un 500 sin `reintentable` (servidor de versión anterior) sigue sin reintentarse
+  const viejo = cliente([{ status: 500, cuerpo: { success: false, message: 'Error interno' } }])
+  await assert.rejects(viejo.fs.ping(), FactuSmartError)
+  assert.equal(viejo.fetch.llamadas.length, 1)
+})
+
+test('reintentable:true NO reintenta las operaciones prohibidas', async () => {
+  const casos = [
+    (fs) => fs.comprobantes.reenviar('abc'),
+    (fs) => fs.comprobantes.consultarSunat('abc'),
+    (fs) => fs.anulaciones.crear({ fecha_de_emision_de_documentos: '08-07-2026', documentos: [] }),
+    (fs) => fs.guias.emitir({ serie_documento: 'TA01', codigo_tipo_documento: '09', datos_del_emisor: { codigo_del_domicilio_fiscal: '0000' }, items: [] }),
+    (fs) => fs.rucs.activar('20609999991', true),
+  ]
+  for (const llamar of casos) {
+    const { fs, fetch } = cliente([
+      { status: 500, cuerpo: { success: false, message: 'SUNAT no responde.', codigo: 'SUNAT_NO_DISPONIBLE', reintentable: true } },
+      { cuerpo: { success: true } },
+    ])
+    await assert.rejects(llamar(fs), (e) => e.codigo === 'SUNAT_NO_DISPONIBLE' && e.reintentable === true)
+    assert.equal(fetch.llamadas.length, 1)
+  }
+})
+
+test('descargar: 404 JSON → NoEncontrado con el message y el codigo del API', async () => {
+  const cuerpo = { success: false, message: 'Comprobante no encontrado.', codigo: 'NO_ENCONTRADO', reintentable: false }
+  const { fs } = cliente([{ status: 404, cuerpo, cabeceras: { 'Content-Type': 'application/json' } }])
+  await assert.rejects(fs.comprobantes.descargar('abc', 'pdf'), (e) => {
+    assert.ok(e instanceof NoEncontrado)
+    assert.equal(e.mensaje, 'Comprobante no encontrado.')
+    assert.equal(e.codigo, 'NO_ENCONTRADO')
+    assert.equal(e.reintentable, false)
+    assert.deepEqual(e.respuesta, cuerpo)
+    return true
+  })
+})
+
+test('codigo LIMITE_PETICIONES cuenta como límite aunque el status no sea 429', async () => {
+  const { fs } = cliente([{ status: 500, cuerpo: { success: false, message: 'Límite alcanzado.', codigo: 'LIMITE_PETICIONES', reintentable: true } }], {
+    maxReintentos: 0,
+  })
+  await assert.rejects(fs.ping(), (e) => e instanceof LimiteDePeticiones && e.codigo === 'LIMITE_PETICIONES')
+})
+
+// ───────────── Webhooks ─────────────
+
+// Vector común de los tres SDK: no cambiarlo.
+const WEBHOOK_CUERPO = '{"evento":"comprobante.aceptado"}'
+const WEBHOOK_SECRETO = 'whsec_prueba'
+const WEBHOOK_FIRMA = 'bc1542f6420851152ae42abd2cbcfe8f651cba4a2822ddd07a15d0fe036f72da'
+
+test('verificarFirmaWebhook: vector común y variantes válidas', () => {
+  assert.equal(verificarFirmaWebhook(WEBHOOK_CUERPO, WEBHOOK_FIRMA, WEBHOOK_SECRETO), true)
+  assert.equal(FactuSmart.verificarFirmaWebhook(WEBHOOK_CUERPO, WEBHOOK_FIRMA, WEBHOOK_SECRETO), true)
+  assert.equal(verificarFirmaWebhook(Buffer.from(WEBHOOK_CUERPO), WEBHOOK_FIRMA, WEBHOOK_SECRETO), true, 'Buffer')
+  assert.equal(verificarFirmaWebhook(new TextEncoder().encode(WEBHOOK_CUERPO), WEBHOOK_FIRMA, WEBHOOK_SECRETO), true, 'Uint8Array')
+  assert.equal(verificarFirmaWebhook(WEBHOOK_CUERPO, `  ${WEBHOOK_FIRMA.toUpperCase()}\n`, WEBHOOK_SECRETO), true, 'mayúsculas y espacios')
+  const grande = Buffer.from(`xx${WEBHOOK_CUERPO}yy`)
+  assert.equal(verificarFirmaWebhook(grande.subarray(2, grande.length - 2), WEBHOOK_FIRMA, WEBHOOK_SECRETO), true, 'vista parcial')
+})
+
+test('verificarFirmaWebhook: rechaza sin lanzar nunca', () => {
+  const casos = [
+    ['{"evento":"comprobante.rechazado"}', WEBHOOK_FIRMA, WEBHOOK_SECRETO, 'cuerpo alterado'],
+    ['{ "evento": "comprobante.aceptado" }', WEBHOOK_FIRMA, WEBHOOK_SECRETO, 'JSON re-serializado'],
+    [WEBHOOK_CUERPO, WEBHOOK_FIRMA, 'whsec_otro', 'secreto equivocado'],
+    [WEBHOOK_CUERPO, '', WEBHOOK_SECRETO, 'firma vacía'],
+    [WEBHOOK_CUERPO, WEBHOOK_FIRMA, '', 'secreto vacío'],
+    [WEBHOOK_CUERPO, `sha256=${WEBHOOK_FIRMA}`, WEBHOOK_SECRETO, 'con prefijo'],
+    [WEBHOOK_CUERPO, WEBHOOK_FIRMA.slice(0, 63), WEBHOOK_SECRETO, '63 hex'],
+    [WEBHOOK_CUERPO, `${WEBHOOK_FIRMA}0`, WEBHOOK_SECRETO, '65 hex'],
+    [WEBHOOK_CUERPO, 'z'.repeat(64), WEBHOOK_SECRETO, 'no hex'],
+    [WEBHOOK_CUERPO, null, WEBHOOK_SECRETO, 'firma null'],
+    [WEBHOOK_CUERPO, 123, WEBHOOK_SECRETO, 'firma número'],
+    [WEBHOOK_CUERPO, WEBHOOK_FIRMA, undefined, 'secreto undefined'],
+    [null, WEBHOOK_FIRMA, WEBHOOK_SECRETO, 'cuerpo null'],
+    [{ evento: 'comprobante.aceptado' }, WEBHOOK_FIRMA, WEBHOOK_SECRETO, 'objeto ya parseado'],
+  ]
+  for (const [cuerpo, firma, secreto, caso] of casos) {
+    assert.equal(verificarFirmaWebhook(cuerpo, firma, secreto), false, caso)
+  }
+})
+
+test('la versión es 1.1.0 en el código y en package.json', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.equal(FactuSmart.VERSION, '1.1.0')
+  assert.equal(pkg.version, FactuSmart.VERSION)
 })

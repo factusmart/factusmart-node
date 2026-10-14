@@ -6,7 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { FactuSmart, ErrorDeAutenticacion, ErrorDeValidacion } from '../dist/index.js'
+import { FactuSmart, ErrorDeAutenticacion, ErrorDeValidacion, NoEncontrado } from '../dist/index.js'
 
 const BASE_URL = process.env.FACTUSMART_BASE_URL || 'https://factusmart.test/api/v1/issuer'
 const API_KEY = process.env.FACTUSMART_API_KEY || 'test_apikey_demo_123'
@@ -90,11 +90,13 @@ test('5. idempotencia: misma idempotencyKey dos veces → mismo external_id y el
   assert.equal(antes - despues, 1, `el saldo bajó ${antes - despues} (antes ${antes}, después ${despues})`)
 })
 
-test('6. apiKey falsa → ErrorDeAutenticacion', async () => {
+test('6. apiKey falsa → ErrorDeAutenticacion con codigo NO_AUTENTICADO',async () => {
   const falso = nuevoCliente({ apiKey: 'llave_falsa_que_no_existe' })
   await assert.rejects(falso.ping(), (e) => {
     assert.ok(e instanceof ErrorDeAutenticacion, `fue ${e.constructor.name}: ${e.message}`)
     assert.equal(e.status, 401)
+    assert.equal(e.codigo, 'NO_AUTENTICADO')
+    assert.equal(e.reintentable, false)
     return true
   })
 })
@@ -114,6 +116,8 @@ test('7. payload inválido → ErrorDeValidacion con mensaje legible (y no cobra
   await assert.rejects(fs.comprobantes.listar({ limite: 500 }), (e) => {
     assert.ok(e instanceof ErrorDeValidacion, `fue ${e.constructor.name} (${e.status}): ${e.message}`)
     assert.ok(/limite/i.test(e.mensaje), e.mensaje)
+    assert.equal(e.codigo, 'DATOS_INVALIDOS')
+    assert.ok(Array.isArray(e.campos.limite) && e.campos.limite.length > 0, JSON.stringify(e.campos))
     console.log(`  mensaje del API (listar): ${e.mensaje}`)
     return true
   })
@@ -130,4 +134,17 @@ test('extra: series.listar, comprobantes.listar y rucs.listar responden', async 
   assert.ok(l.comprobantes.length <= 2)
   const r = await fs.rucs.listar()
   assert.ok(r.rucs.some((x) => x.ruc === RUC))
+})
+
+test('extra: descargar un external_id inexistente → NoEncontrado con codigo NO_ENCONTRADO (404 JSON)', async () => {
+  const inexistente = '00000000-0000-4000-8000-000000000000'
+  await assert.rejects(fs.comprobantes.descargar(inexistente, 'pdf'), (e) => {
+    assert.ok(e instanceof NoEncontrado, `fue ${e.constructor.name} (${e.status}): ${e.message}`)
+    assert.equal(e.status, 404)
+    assert.equal(e.codigo, 'NO_ENCONTRADO', `codigo recibido: ${e.codigo}`)
+    assert.equal(e.reintentable, false)
+    assert.ok(e.mensaje.length > 0 && !/<html/i.test(e.mensaje), e.mensaje)
+    console.log(`  mensaje del API (descarga): ${e.mensaje}`)
+    return true
+  })
 })
