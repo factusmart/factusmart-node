@@ -135,7 +135,7 @@ Todos heredan de `FactuSmartError` y traen `status` (HTTP; `0` si fue red/timeou
 | 403 | `RucNoAutorizado` | El RUC no es de tu cuenta o está desactivado |
 | 404 | `NoEncontrado` | Comprobante, guía, ticket o archivo inexistente |
 | 422 | `ErrorDeValidacion` | Datos inválidos; el crédito no se cobra. `errores` trae el mapa campo → mensajes si el API lo envía |
-| 429 (o 500 "Too Many Attempts.") | `LimiteDePeticiones` | Límite de peticiones; `segundosDeEspera` si se pudo leer |
+| 429 | `LimiteDePeticiones` | Límite de peticiones; `segundosDeEspera` si se pudo leer |
 | otros / red | `FactuSmartError` | |
 
 ```js
@@ -149,15 +149,13 @@ try {
 }
 ```
 
-> El API actual responde al límite de peticiones con **HTTP 500** y `message: "Too Many Attempts."`
-> en vez de 429. El SDK lo reconoce como `LimiteDePeticiones` igual.
 
 ## Reintentos e idempotencia
 
 - `comprobantes.emitir` **siempre** manda el header `Idempotency-Key`: la tuya (`{ idempotencyKey: 'venta-123' }`,
   recomendado: el id de la venta en tu sistema) o un UUID v4 generado. **La misma clave se reusa en todos
   los reintentos de esa llamada**, así un reintento nunca emite dos veces ni cobra dos veces.
-- Se reintenta solo ante: error de red/timeout, 429 (o 500 "Too Many Attempts."), 502, 503, 504 y, en
+- Se reintenta solo ante: error de red/timeout, 429, 502, 503, 504 y, en
   `emitir`, 409 ("emisión en curso con esa clave"). Espera creciente: 1 s, 2 s, 4 s… Ante límite de
   peticiones se respeta `Retry-After` o el "Espera N segundos" del mensaje.
 - Se reintentan: todos los GET, `comprobantes.emitir` y `rucs.crear` (idempotente por RUC).
