@@ -12,6 +12,7 @@ import {
 import type {
   DatosAnulacion,
   DatosComprobante,
+  DatosEstablecimiento,
   DatosGuia,
   DatosNuevoRuc,
   FiltrosComprobantes,
@@ -19,19 +20,24 @@ import type {
   ItemParaCalcular,
   ItemParaCalcularEnServidor,
   OpcionesCalculo,
+  OpcionesBuscarProductoSunat,
   OpcionesCatalogo,
+  OpcionesDescarga,
   OpcionesEmision,
   OpcionesRuc,
   RespuestaCalculo,
   RespuestaCatalogo,
   RespuestaCatalogos,
+  RespuestaProductosSunat,
   RespuestaActivacionRuc,
   RespuestaAnulacion,
   RespuestaComprobante,
   RespuestaConsultaSunat,
+  RespuestaCrearEstablecimiento,
   RespuestaCrearRuc,
   RespuestaCuenta,
   RespuestaEmision,
+  RespuestaEstablecimientos,
   RespuestaEstadoAnulacion,
   RespuestaEstadoGuia,
   RespuestaGuia,
@@ -85,6 +91,14 @@ interface Peticion {
 }
 
 const ESPERA_MAXIMA_MS = 60_000
+
+const FORMATOS_PDF = ['a4', 'a5', 'ticket', 'ticket80', 'ticket58', 'ticket50'] as const
+
+/** Error de validación local (sin petición), con la misma forma que un 422 DATOS_INVALIDOS del API. */
+function errorLocalDeValidacion(campo: string, mensaje: string): ErrorDeValidacion {
+  const campos = { [campo]: [mensaje] }
+  return new ErrorDeValidacion(mensaje, 422, { success: false, message: mensaje, codigo: 'DATOS_INVALIDOS', reintentable: false, campos }, campos)
+}
 
 const dormirReal = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
@@ -247,8 +261,11 @@ export class FactuSmart {
     listar: (filtros?: FiltrosComprobantes, opciones?: OpcionesRuc) => Promise<RespuestaListado>
     /** GET /documents/{external_id} — estado guardado (no consulta a SUNAT en vivo). */
     consultar: (externalId: string, opciones?: OpcionesRuc) => Promise<RespuestaComprobante>
-    /** GET /documents/{external_id}/{pdf|xml|cdr} — devuelve los bytes del archivo. */
-    descargar: (externalId: string, tipo: TipoArchivo, opciones?: OpcionesRuc) => Promise<Buffer>
+    /**
+     * GET /documents/{external_id}/{pdf|xml|cdr} — devuelve los bytes del archivo. Con `pdf` acepta
+     * `{ formato: 'ticket' }` (a4, a5, ticket, ticket80, ticket58, ticket50); sin formato, el A4.
+     */
+    descargar: (externalId: string, tipo: TipoArchivo, opciones?: OpcionesDescarga) => Promise<Buffer>
     /** POST /documents/{external_id}/reenviar — no se reintenta automáticamente. */
     reenviar: (externalId: string, opciones?: OpcionesRuc) => Promise<RespuestaReenvio>
     /** POST /documents/{external_id}/consultar-sunat — no se reintenta automáticamente. */
@@ -271,6 +288,21 @@ export class FactuSmart {
      * Usa solo las filas con `activo: true`.
      */
     consultar: (nombre: string, opciones?: OpcionesCatalogo) => Promise<RespuestaCatalogo>
+    /**
+     * GET /catalogos/productos-sunat — busca el código de producto SUNAT (catálogo 25) por código
+     * (exacto o prefijo) o por texto (sin tildes). `limite` máx. 50. No consume crédito.
+     */
+    buscarProductoSunat: (q: string, opciones?: OpcionesBuscarProductoSunat) => Promise<RespuestaProductosSunat>
+  }
+
+  readonly establecimientos: {
+    /** GET /establecimientos — locales (anexos SUNAT) del RUC con sus series. No consume crédito. */
+    listar: (opciones?: OpcionesRuc) => Promise<RespuestaEstablecimientos>
+    /**
+     * POST /establecimientos — crea un local (regístralo antes en SUNAT). No se reintenta nunca.
+     * Límite del plan → `RucNoAutorizado` con `codigo: 'LIMITE_ESTABLECIMIENTOS'`.
+     */
+    crear: (datos: DatosEstablecimiento, opciones?: OpcionesRuc) => Promise<RespuestaCrearEstablecimiento>
   }
 
   readonly anulaciones: {
@@ -350,10 +382,21 @@ export class FactuSmart {
         if (tipo !== 'pdf' && tipo !== 'xml' && tipo !== 'cdr') {
           return Promise.reject(new FactuSmartError(`Tipo de archivo inválido "${String(tipo)}": usa 'pdf', 'xml' o 'cdr'.`))
         }
+        const formato = o?.formato
+        if (formato !== undefined && formato !== null) {
+          if (tipo !== 'pdf') {
+            return Promise.reject(errorLocalDeValidacion('formato', `formato solo aplica al PDF, no a '${tipo}'.`))
+          }
+          if (!(FORMATOS_PDF as readonly unknown[]).includes(formato)) {
+            return Promise.reject(
+              errorLocalDeValidacion('formato', `Formato de PDF inválido "${String(formato)}": usa ${FORMATOS_PDF.join(', ')}.`),
+            )
+          }
+        }
         return this.peticion<Buffer>({
           metodo: 'GET',
           ruta: `/documents/${id(externalId)}/${tipo}`,
-          query: { ruc: this.rucDe(o) },
+          query: { formato: formato ?? undefined, ruc: this.rucDe(o) },
           reintentable: true,
           binario: true,
         })
@@ -392,6 +435,28 @@ export class FactuSmart {
           query: { q: o?.q, ruc: this.rucDe(o) },
           reintentable: true,
         })
+      },
+      buscarProductoSunat: (q, o) => {
+        if (typeof q !== 'string' || q.trim() === '') {
+          return Promise.reject(new FactuSmartError('catalogos.buscarProductoSunat(q): pasa un texto (ej. "computador") o un código (ej. "4321").'))
+        }
+        return this.peticion({
+          metodo: 'GET',
+          ruta: '/catalogos/productos-sunat',
+          query: { q: q.trim(), limite: o?.limite, ruc: this.rucDe(o) },
+          reintentable: true,
+        })
+      },
+    }
+
+    this.establecimientos = {
+      listar: (o) => this.peticion({ metodo: 'GET', ruta: '/establecimientos', query: { ruc: this.rucDe(o) }, reintentable: true }),
+      // No es idempotente ni acepta Idempotency-Key: nunca se reintenta solo.
+      crear: (datos, o) => {
+        if (!esObjeto(datos)) {
+          return Promise.reject(new FactuSmartError('establecimientos.crear(datos): pasa el local como objeto.'))
+        }
+        return this.peticion({ metodo: 'POST', ruta: '/establecimientos', cuerpo: this.cuerpoConRuc(datos, o), reintentable: false })
       },
     }
 

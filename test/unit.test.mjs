@@ -612,7 +612,149 @@ test('anulaciones: ANULACION_MIXTA → ErrorDeValidacion sin reintento; la respu
 })
 
 test('CODIGOS_DE_ERROR incluye los códigos nuevos', () => {
-  for (const c of ['LIMITE_PRUEBAS_DIARIO', 'ANULACION_MIXTA', 'LLAVE_DE_PRUEBA_EN_PRODUCCION']) assert.ok(CODIGOS_DE_ERROR.includes(c), c)
+  for (const c of ['LIMITE_PRUEBAS_DIARIO', 'ANULACION_MIXTA', 'LLAVE_DE_PRUEBA_EN_PRODUCCION', 'PDF_NO_GENERADO', 'LIMITE_ESTABLECIMIENTOS']) assert.ok(CODIGOS_DE_ERROR.includes(c), c)
+})
+
+// ───────────── Código de producto SUNAT ─────────────
+
+test('catalogos.buscarProductoSunat: GET /catalogos/productos-sunat con q, limite y ruc en la query', async () => {
+  const ok = { success: true, catalogo: 'productos-sunat', catalogo_sunat: '25', q: 'computador', total: 1, hay_mas: false, datos: [{ codigo: '43211503', descripcion: 'Computadores portátiles' }] }
+  const { fs, fetch } = cliente([{ cuerpo: ok }, { cuerpo: ok }])
+  assert.deepEqual(await fs.catalogos.buscarProductoSunat('computador', { limite: 10 }), ok)
+  const u = new URL(fetch.llamadas[0].url)
+  assert.equal(fetch.llamadas[0].init.method, 'GET')
+  assert.equal(u.pathname, '/api/v1/issuer/catalogos/productos-sunat')
+  assert.equal(u.searchParams.get('q'), 'computador')
+  assert.equal(u.searchParams.get('limite'), '10')
+  assert.equal(u.searchParams.get('ruc'), '20123456789')
+
+  await fs.catalogos.buscarProductoSunat(' 4321 ', { ruc: '20999999999' })
+  const u2 = new URL(fetch.llamadas[1].url)
+  assert.equal(u2.searchParams.get('q'), '4321')
+  assert.equal(u2.searchParams.has('limite'), false)
+  assert.equal(u2.searchParams.get('ruc'), '20999999999')
+
+  await assert.rejects(fs.catalogos.buscarProductoSunat(''), FactuSmartError)
+  assert.equal(fetch.llamadas.length, 2)
+})
+
+test('catalogos.buscarProductoSunat se reintenta como un GET (503)', async () => {
+  const { fs, fetch } = cliente([{ status: 503, cuerpo: { success: false, message: 'caído' } }, { cuerpo: { success: true, datos: [] } }])
+  await fs.catalogos.buscarProductoSunat('x')
+  assert.equal(fetch.llamadas.length, 2)
+})
+
+// ───────────── Anexos (establecimientos) ─────────────
+
+const LOCAL = { codigo_anexo: '0001', nombre: 'Tienda Miraflores', direccion: 'Av. Larco 345', ubigeo: '150122', series: [{ codigo_tipo_documento: '03', serie: 'B002' }] }
+
+test('establecimientos.listar: GET /establecimientos con ruc en la query (y el de la llamada manda)', async () => {
+  const ok = { success: true, establecimientos: [{ id: 1, codigo_anexo: '0000', nombre: 'Principal', predeterminado: true, series: [] }] }
+  const { fs, fetch } = cliente([{ cuerpo: ok }, { cuerpo: ok }])
+  assert.deepEqual(await fs.establecimientos.listar(), ok)
+  assert.equal(fetch.llamadas[0].init.method, 'GET')
+  assert.equal(fetch.llamadas[0].url, `${BASE}/establecimientos?ruc=20123456789`)
+  assert.equal(fetch.llamadas[0].init.body, undefined)
+  await fs.establecimientos.listar({ ruc: '20999999999' })
+  assert.equal(fetch.llamadas[1].url, `${BASE}/establecimientos?ruc=20999999999`)
+})
+
+test('establecimientos.listar se reintenta como cualquier GET (503)', async () => {
+  const { fs, fetch } = cliente([{ status: 503, cuerpo: { success: false, message: 'caído' } }, { cuerpo: { success: true, establecimientos: [] } }])
+  await fs.establecimientos.listar()
+  assert.equal(fetch.llamadas.length, 2)
+})
+
+test('establecimientos.crear: POST /establecimientos con los datos y el ruc en el cuerpo, sin ruc en la query', async () => {
+  const ok = { success: true, message: 'Establecimiento creado.', establecimiento: { id: 2, codigo_anexo: '0001', nombre: 'Tienda Miraflores', predeterminado: false, series: [] } }
+  const { fs, fetch } = cliente([{ status: 201, cuerpo: ok }, { status: 201, cuerpo: ok }, { status: 201, cuerpo: ok }])
+  assert.deepEqual(await fs.establecimientos.crear(LOCAL), ok)
+  const l = fetch.llamadas[0]
+  assert.equal(l.init.method, 'POST')
+  assert.equal(l.url, `${BASE}/establecimientos`)
+  assert.deepEqual(l.cuerpo, { ...LOCAL, ruc: '20123456789' })
+  assert.equal(l.cabeceras['Content-Type'], 'application/json')
+  assert.equal(l.cabeceras['Idempotency-Key'], undefined)
+
+  await fs.establecimientos.crear(LOCAL, { ruc: '20999999999' })
+  assert.equal(fetch.llamadas[1].cuerpo.ruc, '20999999999')
+  // El ruc que el usuario puso en sus datos se respeta.
+  await fs.establecimientos.crear({ ...LOCAL, ruc: '20555555555' }, { ruc: '20999999999' })
+  assert.equal(fetch.llamadas[2].cuerpo.ruc, '20555555555')
+  // No muta los datos del usuario.
+  assert.equal(LOCAL.ruc, undefined)
+
+  await assert.rejects(fs.establecimientos.crear(null), FactuSmartError)
+})
+
+test('establecimientos.crear NUNCA se reintenta: una sola petición ante 503, 500 reintentable y error de red', async () => {
+  for (const r of [
+    { status: 503, cuerpo: { success: false, message: 'caído' } },
+    { status: 500, cuerpo: { success: false, message: 'x', codigo: 'ERROR_INTERNO', reintentable: true } },
+    new TypeError('fetch failed'),
+  ]) {
+    const { fs, fetch, esperas } = cliente([r, { status: 201, cuerpo: { success: true } }])
+    await assert.rejects(fs.establecimientos.crear(LOCAL), FactuSmartError)
+    assert.equal(fetch.llamadas.length, 1)
+    assert.equal(esperas.length, 0)
+  }
+})
+
+test('establecimientos.crear: 403 LIMITE_ESTABLECIMIENTOS → RucNoAutorizado con ese codigo', async () => {
+  const cuerpo = { success: false, message: 'Ha alcanzado el límite de 1 sucursal(es) permitidas por su plan.', codigo: 'LIMITE_ESTABLECIMIENTOS', reintentable: false }
+  const { fs, fetch } = cliente([{ status: 403, cuerpo }])
+  await assert.rejects(fs.establecimientos.crear(LOCAL), (e) => e instanceof RucNoAutorizado && e.codigo === 'LIMITE_ESTABLECIMIENTOS' && e.reintentable === false)
+  assert.equal(fetch.llamadas.length, 1)
+})
+
+// ───────────── PDF por formato ─────────────
+
+test('descargar pdf con formato manda ?formato=; sin formato no lo manda', async () => {
+  const pdf = { cuerpo: '%PDF-1.4', cabeceras: { 'Content-Type': 'application/pdf' } }
+  const { fs, fetch } = cliente([pdf, pdf, pdf, pdf])
+  await fs.comprobantes.descargar('abc', 'pdf', { formato: 'ticket' })
+  const u = new URL(fetch.llamadas[0].url)
+  assert.equal(u.pathname, '/api/v1/issuer/documents/abc/pdf')
+  assert.equal(u.searchParams.get('formato'), 'ticket')
+  assert.equal(u.searchParams.get('ruc'), '20123456789')
+
+  await fs.comprobantes.descargar('abc', 'pdf', { formato: 'ticket58', ruc: '20999999999' })
+  const u2 = new URL(fetch.llamadas[1].url)
+  assert.equal(u2.searchParams.get('formato'), 'ticket58')
+  assert.equal(u2.searchParams.get('ruc'), '20999999999')
+
+  await fs.comprobantes.descargar('abc', 'pdf')
+  assert.equal(new URL(fetch.llamadas[2].url).searchParams.has('formato'), false)
+  await fs.comprobantes.descargar('abc', 'xml', {})
+  assert.equal(new URL(fetch.llamadas[3].url).searchParams.has('formato'), false)
+
+  for (const f of ['a4', 'a5', 'ticket80', 'ticket50']) {
+    const otro = cliente([pdf])
+    await otro.fs.comprobantes.descargar('abc', 'pdf', { formato: f })
+    assert.equal(new URL(otro.fetch.llamadas[0].url).searchParams.get('formato'), f)
+  }
+})
+
+test('descargar: formato con xml/cdr → ErrorDeValidacion local (422, DATOS_INVALIDOS, campos.formato) sin petición', async () => {
+  const { fs, fetch } = cliente([{ cuerpo: 'x' }])
+  for (const tipo of ['xml', 'cdr']) {
+    await assert.rejects(
+      fs.comprobantes.descargar('abc', tipo, { formato: 'ticket' }),
+      (e) => e instanceof ErrorDeValidacion && e.status === 422 && e.codigo === 'DATOS_INVALIDOS' && Array.isArray(e.campos.formato) && e.campos.formato.length === 1,
+    )
+  }
+  assert.equal(fetch.llamadas.length, 0)
+})
+
+test('descargar: formato fuera de la lista → ErrorDeValidacion local sin petición', async () => {
+  const { fs, fetch } = cliente([{ cuerpo: 'x' }])
+  for (const formato of ['A4', 'ticket70', 'carta', '']) {
+    await assert.rejects(
+      fs.comprobantes.descargar('abc', 'pdf', { formato }),
+      (e) => e instanceof ErrorDeValidacion && e.status === 422 && e.codigo === 'DATOS_INVALIDOS' && e.reintentable === false && 'formato' in e.campos,
+    )
+  }
+  assert.equal(fetch.llamadas.length, 0)
 })
 
 // ───────────── Webhooks ─────────────

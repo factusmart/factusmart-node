@@ -30,6 +30,9 @@ export const METODOS = {
   calculateDocument: 'comprobantes.calcular',
   listCatalogs: 'catalogos.listar',
   getCatalog: 'catalogos.consultar',
+  searchSunatProductCodes: 'catalogos.buscarProductoSunat',
+  listEstablishments: 'establecimientos.listar',
+  createEstablishment: 'establecimientos.crear',
   // Webhook (sección `webhooks` del yaml): lo manda el API; el SDK solo verifica la firma (método estático).
   webhookComprobanteEstado: 'FactuSmart.verificarFirmaWebhook',
 }

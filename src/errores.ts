@@ -36,6 +36,11 @@ export const CODIGOS_DE_ERROR = [
   /** 422: facturas y boletas en la misma anulación. */
   'ANULACION_MIXTA',
   'ERROR_INTERNO',
+  /** 500 (`reintentable: true`): el generador del PDF falló dos veces seguidas. */
+  'PDF_NO_GENERADO',
+  /** 403: el plan del RUC no permite más locales (`establecimientos.crear`). */
+  'LIMITE_ESTABLECIMIENTOS',
+  'CATALOGO_NO_DISPONIBLE',
 ] as const
 
 /** Código conocido, o cualquier otro string (el tipo queda abierto a códigos nuevos). */

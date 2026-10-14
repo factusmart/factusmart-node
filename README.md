@@ -78,7 +78,7 @@ Los **datos** se envían y se reciben tal cual los define el API (claves en espa
 | `fs.comprobantes.emitir(datos, opciones?)` | `POST /documents` | objeto |
 | `fs.comprobantes.listar(filtros?, opciones?)` | `GET /documents` | objeto (`comprobantes`, `siguiente_cursor`) |
 | `fs.comprobantes.consultar(externalId, opciones?)` | `GET /documents/{id}` | objeto |
-| `fs.comprobantes.descargar(externalId, 'pdf' \| 'xml' \| 'cdr', opciones?)` | `GET /documents/{id}/{tipo}` | **`Buffer`** |
+| `fs.comprobantes.descargar(externalId, 'pdf' \| 'xml' \| 'cdr', { formato, ruc }?)` | `GET /documents/{id}/{tipo}` | **`Buffer`** |
 | `fs.comprobantes.reenviar(externalId, opciones?)` | `POST /documents/{id}/reenviar` | objeto |
 | `fs.comprobantes.consultarSunat(externalId, opciones?)` | `POST /documents/{id}/consultar-sunat` | objeto |
 | `fs.comprobantes.historial(externalId, opciones?)` | `GET /documents/{id}/historial` | objeto |
@@ -87,6 +87,9 @@ Los **datos** se envían y se reciben tal cual los define el API (claves en espa
 | `fs.anulaciones.estado(ticket, opciones?)` | `GET /anulaciones/{ticket}/status` | objeto (`tipo`, `estado`, `documentos`) |
 | `fs.catalogos.listar(opciones?)` | `GET /catalogos` | objeto (`catalogos`, `nota`) |
 | `fs.catalogos.consultar(nombre, { q, ruc }?)` | `GET /catalogos/{nombre}` | objeto (`catalogo`, `total`, `datos`) |
+| `fs.catalogos.buscarProductoSunat(q, { limite, ruc }?)` | `GET /catalogos/productos-sunat` | objeto (`total`, `hay_mas`, `datos`) |
+| `fs.establecimientos.listar(opciones?)` | `GET /establecimientos` | objeto (`establecimientos`) |
+| `fs.establecimientos.crear(datos, opciones?)` | `POST /establecimientos` | objeto (`message`, `establecimiento`) |
 | `fs.guias.emitir(datos, opciones?)` | `POST /guias` | objeto (revisa `enviado`) |
 | `fs.guias.estado(externalId, opciones?)` | `GET /guias/{id}/status` | objeto |
 | `fs.rucs.listar()` | `GET /rucs` | objeto |
@@ -110,6 +113,24 @@ writeFileSync('comprobante.pdf', await fs.comprobantes.descargar(r.external_id, 
 ```
 
 El CDR solo existe cuando SUNAT respondió; si no existe, se lanza `NoEncontrado`.
+
+**PDF en ticket u otro tamaño:** pasa `formato` (solo con `'pdf'`).
+
+```js
+writeFileSync('ticket.pdf', await fs.comprobantes.descargar(r.external_id, 'pdf', { formato: 'ticket' }))
+```
+
+| `formato` | Tamaño |
+|---|---|
+| *(sin formato)* o `a4` | A4 |
+| `a5` | A5 apaisado |
+| `ticket` o `ticket80` | Ticket de 80 mm |
+| `ticket58` | Ticket de 58 mm |
+| `ticket50` | Ticket de 50 mm |
+
+Es el mismo PDF que imprime el sistema web en ese tamaño. No cambia el PDF que recibe tu cliente
+(ese sigue siendo el A4). `formato` con `'xml'`/`'cdr'` o un valor fuera de la lista lanza
+`ErrorDeValidacion` (`codigo: 'DATOS_INVALIDOS'`, `campos.formato`) **sin hacer la petición**.
 
 ### Anular facturas y boletas
 
@@ -144,6 +165,37 @@ const activas = datos.filter((f) => f.activo) // usa solo las filas activas: el 
 
 `consultar` lee el catálogo del RUC (`ruc` de la llamada o del constructor). Un nombre que no existe
 lanza `NoEncontrado` (la lista válida viene en `e.respuesta.catalogos_disponibles`).
+
+**Código de producto SUNAT (catálogo 25):** búscalo por texto (sin tildes) o por código (exacto o
+prefijo). `limite` máximo 50; `hay_mas: true` significa que conviene afinar la búsqueda.
+
+```js
+const { datos, hay_mas } = await fs.catalogos.buscarProductoSunat('computador', { limite: 10 })
+// datos: [{ codigo: '43211503', descripcion: '...' }, ...]
+```
+
+### Anexos (establecimientos)
+
+Los locales del RUC con su código de anexo SUNAT y sus series. Para emitir desde un local, manda su
+`codigo_anexo` en `comprobantes.emitir`; sin él se usa el `predeterminado`.
+
+```js
+const { establecimientos } = await fs.establecimientos.listar()
+// [{ codigo_anexo: '0000', nombre: 'Oficina Principal', predeterminado: true, series: [...] }, ...]
+
+const { establecimiento } = await fs.establecimientos.crear({
+  codigo_anexo: '0001', // el que te dio SUNAT: regístralo antes allí con tu Clave SOL
+  nombre: 'Tienda Miraflores',
+  direccion: 'Av. Larco 345',
+  ubigeo: '150122',
+  series: [{ codigo_tipo_documento: '03', serie: 'B002' }], // opcional; además se crean las series por defecto
+})
+```
+
+No consumen crédito. `crear` **nunca se reintenta** automáticamente (no es idempotente): si falla
+por red, revisa con `listar()` antes de volver a intentarlo. Si el plan del RUC no permite más
+locales lanza `RucNoAutorizado` con `codigo: 'LIMITE_ESTABLECIMIENTOS'`. Editar o eliminar un local
+se hace desde el sistema web.
 
 ## ¿Calcular en el servidor o local?
 
@@ -315,6 +367,7 @@ npm install
 npm run typecheck     # tsc --noEmit
 npm run build         # dist/ en ESM + CJS + .d.ts
 npm run test:unit     # sin red (fetch falso) + prueba de contrato contra openapi.yaml
+npm run test:api:nuevo # API local: anexos, PDF ticket y código SUNAT; solo lee, no emite
 npm test              # todo, incluido el API local https://factusmart.test (máx. 3 emisiones demo, sin costo)
 ```
 

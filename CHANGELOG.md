@@ -20,6 +20,15 @@
 - `reintentable: false` en el cuerpo del error manda: no se reintenta aunque el HTTP sea
   429/409/5xx. El 429 `LIMITE_PRUEBAS_DIARIO` (tope de 200 operaciones/día en RUCs demo) lanza
   `LimiteDePeticiones` tras una sola petición.
+- `comprobantes.descargar(id, 'pdf', { formato })`: PDF en `a4`, `a5`, `ticket` (= `ticket80`),
+  `ticket58` o `ticket50` (`?formato=`). Sin `formato` no se manda el parámetro (A4 de siempre).
+  `formato` con `xml`/`cdr` o fuera de la lista lanza `ErrorDeValidacion` (422 local,
+  `DATOS_INVALIDOS`, `campos.formato`) sin hacer la petición. Nuevo tipo `FormatoPdf`.
+- Nuevo recurso `establecimientos` (anexos): `listar()` (`GET /establecimientos`, se reintenta como
+  GET) y `crear(datos)` (`POST /establecimientos`, `ruc` en el cuerpo, nunca se reintenta).
+- Nuevo `catalogos.buscarProductoSunat(q, { limite, ruc }?)` (`GET /catalogos/productos-sunat`):
+  código de producto SUNAT (catálogo 25) por texto o código.
+- `CODIGOS_DE_ERROR` suma `PDF_NO_GENERADO`, `LIMITE_ESTABLECIMIENTOS` y `CATALOGO_NO_DISPONIBLE`.
 - Anulaciones de boletas (resumen diario): tipos de `anulaciones.crear` con `tipo` (`baja` |
   `resumen`), `identificador`, `credito_cobrado`, `modo_demo` y `pruebas_restantes_hoy`; y de
   `anulaciones.estado` con `tipo` y `documentos[]`.

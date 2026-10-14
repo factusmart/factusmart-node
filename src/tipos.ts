@@ -23,11 +23,22 @@ export type TipoDocumentoIdentidad = '0' | '1' | '4' | '6' | '7' | 'A' | 'B' | '
 export type Afectacion = '10' | '20' | '30' | '40'
 export type TipoArchivo = 'pdf' | 'xml' | 'cdr'
 
+/**
+ * Tamaño del PDF (`?formato=`). Sin formato: el A4 de siempre. `ticket` y `ticket80` son el mismo
+ * (80 mm). Solo aplica a `pdf`.
+ */
+export type FormatoPdf = 'a4' | 'a5' | 'ticket' | 'ticket80' | 'ticket58' | 'ticket50'
+
 // ───────────── Opciones por llamada ─────────────
 
 export interface OpcionesRuc {
   /** RUC emisor para esta llamada (sobreescribe el del constructor). */
   ruc?: string
+}
+
+export interface OpcionesDescarga extends OpcionesRuc {
+  /** Solo con `pdf`: tamaño del PDF (ticket, A5...). Sin él, el A4 de siempre. */
+  formato?: FormatoPdf
 }
 
 export interface OpcionesEmision extends OpcionesRuc {
@@ -79,6 +90,11 @@ export type ItemParaCalcularEnServidor = {
 export interface OpcionesCalculo {
   /** IGV de los ítems gravados: 18 (default) o 10.5 (tasa reducida Ley 31556, solo RUCs acogidos). */
   porcentaje_igv?: 18 | 10.5
+}
+
+export interface OpcionesBuscarProductoSunat extends OpcionesRuc {
+  /** Cuántas filas traer (máx. 50). */
+  limite?: number
 }
 
 export interface OpcionesCatalogo extends OpcionesRuc {
@@ -552,5 +568,91 @@ export interface RespuestaCatalogo {
   descripcion: string
   total: number
   datos: FilaCatalogo[]
+  [campo: string]: unknown
+}
+
+// ───────────── Anexos (establecimientos) ─────────────
+
+export interface SerieEstablecimiento {
+  serie: string
+  codigo_tipo_documento: string
+  tipo?: string | null
+  [campo: string]: unknown
+}
+
+export interface Establecimiento {
+  id: number
+  /** Código de anexo SUNAT (`0000` = domicilio fiscal). Es el que envías en `codigo_anexo` al emitir. */
+  codigo_anexo: string
+  nombre: string
+  direccion?: string | null
+  ubigeo?: string | null
+  departamento?: string | null
+  provincia?: string | null
+  distrito?: string | null
+  telefono?: string | null
+  email?: string | null
+  /** true = el local desde donde emite `comprobantes.emitir` si no envías `codigo_anexo`. */
+  predeterminado: boolean
+  series: SerieEstablecimiento[]
+  [campo: string]: unknown
+}
+
+export interface RespuestaEstablecimientos {
+  success: true
+  establecimientos: Establecimiento[]
+  [campo: string]: unknown
+}
+
+export interface SerieNuevaEstablecimiento {
+  codigo_tipo_documento: '01' | '03' | '07' | '08'
+  /** 4 caracteres: factura `F` + 3, boleta `B` + 3; las notas empiezan con `F` o `B`. */
+  serie: string
+}
+
+export interface DatosEstablecimiento {
+  /** RUC emisor; si no lo pones, el SDK usa el de las opciones o el del constructor. */
+  ruc?: string
+  /** 4 dígitos que SUNAT asignó al local (regístralo antes en SUNAT). Único en el RUC. */
+  codigo_anexo: string
+  /** Único en el RUC. */
+  nombre: string
+  direccion: string
+  /** Código INEI del distrito, 6 dígitos (ej. `150122`). */
+  ubigeo: string
+  telefono?: string
+  email?: string
+  /** Default true: crea las series del local igual que el sistema web. */
+  crear_series_por_defecto?: boolean
+  /** Series extra (máx. 20). */
+  series?: SerieNuevaEstablecimiento[]
+  [campo: string]: unknown
+}
+
+export interface RespuestaCrearEstablecimiento {
+  success: true
+  message: string
+  establecimiento: Establecimiento
+  [campo: string]: unknown
+}
+
+// ───────────── Código de producto SUNAT (catálogo 25) ─────────────
+
+export interface ProductoSunat {
+  codigo: string
+  descripcion: string
+  [campo: string]: unknown
+}
+
+export interface RespuestaProductosSunat {
+  success: true
+  catalogo: string
+  /** Siempre 25. */
+  catalogo_sunat: string
+  q: string
+  total: number
+  /** true si hay más resultados que el límite: afina la búsqueda. */
+  hay_mas: boolean
+  datos: ProductoSunat[]
   [campo: string]: unknown
 }
