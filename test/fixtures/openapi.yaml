@@ -1518,6 +1518,13 @@ paths:
 
         El código de producto SUNAT (UNSPSC, catálogo 25) no está: envía el código de 8 dígitos en
         `codigo_producto_sunat` del ítem si lo necesitas.
+
+        Acepta `?ruc=` / `X-RUC` como el resto de endpoints, pero la lista es la misma para todos los
+        RUC: el RUC solo cambia las filas de `GET /catalogos/{nombre}`. Si lo mandas, debe ser de tu
+        cuenta (si no, `403 RUC_NO_AUTORIZADO`).
+      parameters:
+        - $ref: '#/components/parameters/RucQuery'
+        - $ref: '#/components/parameters/XRucHeader'
       responses:
         '200':
           description: Lista de catálogos.
