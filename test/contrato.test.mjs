@@ -1,12 +1,12 @@
 // Prueba de contrato: cada operationId del openapi.yaml oficial debe tener su método en el SDK.
 // Si el API crece y nadie actualiza el SDK, esta prueba falla.
-// Ruta del yaml: variable FACTUSMART_OPENAPI o la del repo local de FactuSmart.
+// Ruta del yaml: variable FACTUSMART_OPENAPI o la copia en test/fixtures/openapi.yaml.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { FactuSmart } from '../dist/index.js'
 
-const RUTA_YAML = process.env.FACTUSMART_OPENAPI || 'C:/laragon/www/factusmart/docs/api/openapi.yaml'
+const RUTA_YAML = process.env.FACTUSMART_OPENAPI || new URL('./fixtures/openapi.yaml', import.meta.url)
 
 /** operationId → ruta del método en el SDK (DISENO_SDK.md). */
 export const METODOS = {
