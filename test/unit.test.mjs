@@ -44,7 +44,7 @@ function cliente(respuestas, extra = {}) {
   const fs = new FactuSmart({
     apiKey: 'k_prueba',
     baseUrl: BASE + '/',
-    ruc: '20123456789',
+    ruc: '20100070970',
     fetch,
     dormir: async (ms) => {
       esperas.push(ms)
@@ -98,7 +98,7 @@ test('sin apiKey o sin baseUrl lanza un error claro en español', () => {
 test('quita la barra final de baseUrl y manda X-API-Key + Accept JSON', async () => {
   const { fs, fetch } = cliente([{ cuerpo: { success: true, message: 'ok', cuenta: 'c', creditos: 1 } }])
   await fs.ping()
-  assert.equal(fetch.llamadas[0].url, `${BASE}/ping?ruc=20123456789`)
+  assert.equal(fetch.llamadas[0].url, `${BASE}/ping?ruc=20100070970`)
   assert.equal(fetch.llamadas[0].cabeceras['X-API-Key'], 'k_prueba')
   assert.equal(fetch.llamadas[0].cabeceras.Accept, 'application/json')
 })
@@ -120,7 +120,7 @@ test('emitir completa los valores por defecto y respeta lo que manda el usuario'
   await fs.comprobantes.emitir(DATOS())
   const c = fetch.llamadas[0].cuerpo
   assert.equal(fetch.llamadas[0].init.method, 'POST')
-  assert.equal(c.ruc, '20123456789')
+  assert.equal(c.ruc, '20100070970')
   assert.equal(c.numero_documento, '#')
   assert.equal(c.codigo_tipo_operacion, '0101')
   assert.equal(c.codigo_tipo_moneda, 'PEN')
@@ -128,9 +128,9 @@ test('emitir completa los valores por defecto y respeta lo que manda el usuario'
   assert.equal(c.fecha_de_emision, peru.fecha)
   assert.match(c.hora_de_emision, /^\d{2}:\d{2}:\d{2}$/)
 
-  await fs.comprobantes.emitir({ ...DATOS(), ruc: '20555555555', numero_documento: '77', codigo_tipo_moneda: 'USD', fecha_de_emision: '2026-01-02', hora_de_emision: '08:00:00' })
+  await fs.comprobantes.emitir({ ...DATOS(), ruc: '20131312955', numero_documento: '77', codigo_tipo_moneda: 'USD', fecha_de_emision: '2026-01-02', hora_de_emision: '08:00:00' })
   const c2 = fetch.llamadas[1].cuerpo
-  assert.equal(c2.ruc, '20555555555')
+  assert.equal(c2.ruc, '20131312955')
   assert.equal(c2.numero_documento, '77')
   assert.equal(c2.codigo_tipo_moneda, 'USD')
   assert.equal(c2.fecha_de_emision, '2026-01-02')
@@ -310,7 +310,7 @@ test('descargar devuelve un Buffer; 404 en HTML (servidor anterior) → NoEncont
   const b = await fs.comprobantes.descargar('abc', 'pdf')
   assert.ok(Buffer.isBuffer(b))
   assert.equal(b.toString('latin1'), pdf)
-  assert.ok(fetch.llamadas[0].url.endsWith('/documents/abc/pdf?ruc=20123456789'))
+  assert.ok(fetch.llamadas[0].url.endsWith('/documents/abc/pdf?ruc=20100070970'))
 
   const { fs: fs2 } = cliente([{ status: 404, cuerpo: '<html><body>No encontrado</body></html>', cabeceras: { 'Content-Type': 'text/html' } }])
   await assert.rejects(fs2.comprobantes.descargar('abc', 'cdr'), (e) => e instanceof NoEncontrado && e.status === 404)
@@ -577,7 +577,7 @@ test('catalogos.listar y catalogos.consultar: GET con q y ruc en la query, nombr
   const { fs, fetch } = cliente([{ cuerpo: { success: true, catalogos: [] } }, { cuerpo: { success: true, datos: [] } }, { cuerpo: { success: true, datos: [] } }])
   await fs.catalogos.listar()
   assert.equal(fetch.llamadas[0].init.method, 'GET')
-  assert.equal(fetch.llamadas[0].url, `${BASE}/catalogos?ruc=20123456789`)
+  assert.equal(fetch.llamadas[0].url, `${BASE}/catalogos?ruc=20100070970`)
 
   await fs.catalogos.consultar('unidades', { q: 'kilo', ruc: '20999999999' })
   const u = new URL(fetch.llamadas[1].url)
@@ -608,7 +608,7 @@ test('anulaciones: ANULACION_MIXTA → ErrorDeValidacion sin reintento; la respu
   const ok = { success: true, message: 'ok', tipo: 'resumen', ticket: '1', external_id: 'e', identificador: 'RC-20261014-1', creditos_restantes: 5, credito_cobrado: false, modo_demo: true, pruebas_restantes_hoy: 197 }
   const { fs, fetch } = cliente([{ cuerpo: ok }])
   assert.deepEqual(await fs.anulaciones.crear(datos), ok)
-  assert.equal(fetch.llamadas[0].cuerpo.ruc, '20123456789')
+  assert.equal(fetch.llamadas[0].cuerpo.ruc, '20100070970')
 })
 
 test('CODIGOS_DE_ERROR incluye los códigos nuevos', () => {
@@ -626,7 +626,7 @@ test('catalogos.buscarProductoSunat: GET /catalogos/productos-sunat con q, limit
   assert.equal(u.pathname, '/api/v1/issuer/catalogos/productos-sunat')
   assert.equal(u.searchParams.get('q'), 'computador')
   assert.equal(u.searchParams.get('limite'), '10')
-  assert.equal(u.searchParams.get('ruc'), '20123456789')
+  assert.equal(u.searchParams.get('ruc'), '20100070970')
 
   await fs.catalogos.buscarProductoSunat(' 4321 ', { ruc: '20999999999' })
   const u2 = new URL(fetch.llamadas[1].url)
@@ -664,7 +664,7 @@ test('establecimientos.listar: GET /establecimientos con ruc en la query (y el d
   const { fs, fetch } = cliente([{ cuerpo: ok }, { cuerpo: ok }])
   assert.deepEqual(await fs.establecimientos.listar(), ok)
   assert.equal(fetch.llamadas[0].init.method, 'GET')
-  assert.equal(fetch.llamadas[0].url, `${BASE}/establecimientos?ruc=20123456789`)
+  assert.equal(fetch.llamadas[0].url, `${BASE}/establecimientos?ruc=20100070970`)
   assert.equal(fetch.llamadas[0].init.body, undefined)
   await fs.establecimientos.listar({ ruc: '20999999999' })
   assert.equal(fetch.llamadas[1].url, `${BASE}/establecimientos?ruc=20999999999`)
@@ -683,15 +683,15 @@ test('establecimientos.crear: POST /establecimientos con los datos y el ruc en e
   const l = fetch.llamadas[0]
   assert.equal(l.init.method, 'POST')
   assert.equal(l.url, `${BASE}/establecimientos`)
-  assert.deepEqual(l.cuerpo, { ...LOCAL, ruc: '20123456789' })
+  assert.deepEqual(l.cuerpo, { ...LOCAL, ruc: '20100070970' })
   assert.equal(l.cabeceras['Content-Type'], 'application/json')
   assert.equal(l.cabeceras['Idempotency-Key'], undefined)
 
   await fs.establecimientos.crear(LOCAL, { ruc: '20999999999' })
   assert.equal(fetch.llamadas[1].cuerpo.ruc, '20999999999')
   // El ruc que el usuario puso en sus datos se respeta.
-  await fs.establecimientos.crear({ ...LOCAL, ruc: '20555555555' }, { ruc: '20999999999' })
-  assert.equal(fetch.llamadas[2].cuerpo.ruc, '20555555555')
+  await fs.establecimientos.crear({ ...LOCAL, ruc: '20131312955' }, { ruc: '20999999999' })
+  assert.equal(fetch.llamadas[2].cuerpo.ruc, '20131312955')
   // No muta los datos del usuario.
   assert.equal(LOCAL.ruc, undefined)
 
@@ -727,7 +727,7 @@ test('descargar pdf con formato manda ?formato=; sin formato no lo manda', async
   const u = new URL(fetch.llamadas[0].url)
   assert.equal(u.pathname, '/api/v1/issuer/documents/abc/pdf')
   assert.equal(u.searchParams.get('formato'), 'ticket')
-  assert.equal(u.searchParams.get('ruc'), '20123456789')
+  assert.equal(u.searchParams.get('ruc'), '20100070970')
 
   await fs.comprobantes.descargar('abc', 'pdf', { formato: 'ticket58', ruc: '20999999999' })
   const u2 = new URL(fetch.llamadas[1].url)

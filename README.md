@@ -19,7 +19,7 @@ npm install factusmart
 ```js
 import FactuSmart from 'factusmart'   // o: const { FactuSmart } = require('factusmart')
 
-const fs = new FactuSmart({ apiKey: 'TU_API_KEY', baseUrl: 'https://TU_URL_BASE/api/v1/issuer', ruc: '20123456789' })
+const fs = new FactuSmart({ apiKey: 'TU_API_KEY', baseUrl: 'https://TU_URL_BASE/api/v1/issuer', ruc: '20100070970' })
 
 const { items, totales } = FactuSmart.calcularComprobante([
   { descripcion: 'Servicio de consultoría', cantidad: 1, valor_unitario: 100, afectacion: '10' },
@@ -27,7 +27,7 @@ const { items, totales } = FactuSmart.calcularComprobante([
 
 const r = await fs.comprobantes.emitir({
   codigo_tipo_documento: '01',
-  datos_del_cliente_o_receptor: { codigo_tipo_documento_identidad: '6', numero_documento: '20555555555' },
+  datos_del_cliente_o_receptor: { codigo_tipo_documento_identidad: '6', numero_documento: '20131312955' },
   items, totales,
 })
 
@@ -266,7 +266,7 @@ try {
   await fs.comprobantes.emitir(datos)
 } catch (e) {
   if (e instanceof ErrorDeValidacion) console.log('Corrige el JSON:', e.mensaje, e.campos)
-  else if (e instanceof SinCreditos) console.log('Recarga créditos')
+  else if (e instanceof SinCreditos) console.log('Sube de plan o pide créditos extra para tu plan')
   else if (e.codigo === 'PLAN_VENCIDO') console.log('Renueva tu plan')
   else throw e
 }
