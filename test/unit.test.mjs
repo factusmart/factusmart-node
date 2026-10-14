@@ -66,7 +66,7 @@ const EMISION_OK = {
 
 const DATOS = () => ({
   codigo_tipo_documento: '03',
-  datos_del_cliente_o_receptor: { codigo_tipo_documento_identidad: '1', numero_documento: '77344962' },
+  datos_del_cliente_o_receptor: { codigo_tipo_documento_identidad: '1', numero_documento: '12345678' },
   ...calcularComprobante([{ descripcion: 'X', cantidad: 1, valor_unitario: 50, afectacion: '10' }]),
 })
 
