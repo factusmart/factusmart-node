@@ -92,9 +92,14 @@ export interface OpcionesCalculo {
   porcentaje_igv?: 18 | 10.5
 }
 
+/** Nivel de la jerarquía UNSPSC. En el comprobante va un código de nivel `producto`. */
+export type NivelProductoSunat = 'segmento' | 'familia' | 'clase' | 'producto'
+
 export interface OpcionesBuscarProductoSunat extends OpcionesRuc {
   /** Cuántas filas traer (máx. 50). */
   limite?: number
+  /** Filtra por nivel UNSPSC. Sin nivel no se manda el parámetro. */
+  nivel?: NivelProductoSunat
 }
 
 export interface OpcionesCatalogo extends OpcionesRuc {

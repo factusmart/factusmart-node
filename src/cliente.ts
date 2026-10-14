@@ -443,7 +443,7 @@ export class FactuSmart {
         return this.peticion({
           metodo: 'GET',
           ruta: '/catalogos/productos-sunat',
-          query: { q: q.trim(), limite: o?.limite, ruc: this.rucDe(o) },
+          query: { q: q.trim(), limite: o?.limite, nivel: o?.nivel?.trim() || undefined, ruc: this.rucDe(o) },
           reintentable: true,
         })
       },

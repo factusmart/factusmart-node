@@ -638,6 +638,17 @@ test('catalogos.buscarProductoSunat: GET /catalogos/productos-sunat con q, limit
   assert.equal(fetch.llamadas.length, 2)
 })
 
+test('catalogos.buscarProductoSunat: nivel va en la query solo si se pasa', async () => {
+  const ok = { success: true, datos: [] }
+  const { fs, fetch } = cliente([{ cuerpo: ok }, { cuerpo: ok }])
+  await fs.catalogos.buscarProductoSunat('computador', { nivel: 'producto', limite: 5 })
+  const u = new URL(fetch.llamadas[0].url)
+  assert.equal(u.searchParams.get('nivel'), 'producto')
+  assert.equal(u.searchParams.get('limite'), '5')
+  await fs.catalogos.buscarProductoSunat('computador')
+  assert.equal(new URL(fetch.llamadas[1].url).searchParams.has('nivel'), false)
+})
+
 test('catalogos.buscarProductoSunat se reintenta como un GET (503)', async () => {
   const { fs, fetch } = cliente([{ status: 503, cuerpo: { success: false, message: 'caído' } }, { cuerpo: { success: true, datos: [] } }])
   await fs.catalogos.buscarProductoSunat('x')

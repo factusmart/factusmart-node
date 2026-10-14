@@ -87,7 +87,7 @@ Los **datos** se envían y se reciben tal cual los define el API (claves en espa
 | `fs.anulaciones.estado(ticket, opciones?)` | `GET /anulaciones/{ticket}/status` | objeto (`tipo`, `estado`, `documentos`) |
 | `fs.catalogos.listar(opciones?)` | `GET /catalogos` | objeto (`catalogos`, `nota`) |
 | `fs.catalogos.consultar(nombre, { q, ruc }?)` | `GET /catalogos/{nombre}` | objeto (`catalogo`, `total`, `datos`) |
-| `fs.catalogos.buscarProductoSunat(q, { limite, ruc }?)` | `GET /catalogos/productos-sunat` | objeto (`total`, `hay_mas`, `datos`) |
+| `fs.catalogos.buscarProductoSunat(q, { limite, nivel, ruc }?)` | `GET /catalogos/productos-sunat` | objeto (`total`, `hay_mas`, `datos`) |
 | `fs.establecimientos.listar(opciones?)` | `GET /establecimientos` | objeto (`establecimientos`) |
 | `fs.establecimientos.crear(datos, opciones?)` | `POST /establecimientos` | objeto (`message`, `establecimiento`) |
 | `fs.guias.emitir(datos, opciones?)` | `POST /guias` | objeto (revisa `enviado`) |
