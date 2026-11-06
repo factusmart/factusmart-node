@@ -29,6 +29,9 @@ import type {
   RespuestaCatalogo,
   RespuestaCatalogos,
   RespuestaProductosSunat,
+  RespuestaConsultaDocumento,
+  RespuestaRaiz,
+  TipoDocumentoConsulta,
   RespuestaActivacionRuc,
   RespuestaAnulacion,
   RespuestaComprobante,
@@ -51,7 +54,7 @@ import type {
   Totales,
 } from './tipos.js'
 
-export const VERSION = '1.1.0'
+export const VERSION = '1.2.0'
 
 type FuncionFetch = (url: string, init?: Record<string, unknown>) => Promise<Response>
 
@@ -295,6 +298,20 @@ export class FactuSmart {
     buscarProductoSunat: (q: string, opciones?: OpcionesBuscarProductoSunat) => Promise<RespuestaProductosSunat>
   }
 
+  readonly consultas: {
+    /**
+     * GET /consultas/{tipo}/{numero} — nombre, dirección, estado, condición y ubigeo de un RUC o DNI.
+     * No emite, no gasta créditos y no usa el RUC emisor. Descuenta del cupo de consultas de la cuenta
+     * (salvo `desde_cache: true`). Cupo agotado → `LimiteDePeticiones` con `codigo: 'LIMITE_CONSULTAS'`
+     * (no se reintenta).
+     */
+    documento: (tipo: TipoDocumentoConsulta, numero: string) => Promise<RespuestaConsultaDocumento>
+    /** Atajo de `documento('ruc', numero)`. */
+    ruc: (numero: string) => Promise<RespuestaConsultaDocumento>
+    /** Atajo de `documento('dni', numero)`. */
+    dni: (numero: string) => Promise<RespuestaConsultaDocumento>
+  }
+
   readonly establecimientos: {
     /** GET /establecimientos — locales (anexos SUNAT) del RUC con sus series. No consume crédito. */
     listar: (opciones?: OpcionesRuc) => Promise<RespuestaEstablecimientos>
@@ -449,6 +466,22 @@ export class FactuSmart {
       },
     }
 
+    // Sin RUC emisor (el API lo ignora): ni `?ruc=` ni cuerpo. Es un GET: se reintenta.
+    const consultarDocumento = (tipo: TipoDocumentoConsulta, numero: string): Promise<RespuestaConsultaDocumento> => {
+      if (tipo !== 'ruc' && tipo !== 'dni') {
+        return Promise.reject(new FactuSmartError("consultas.documento(tipo, numero): tipo debe ser 'ruc' o 'dni'."))
+      }
+      if (typeof numero !== 'string' || numero.trim() === '') {
+        return Promise.reject(new FactuSmartError(`consultas.documento(tipo, numero): pasa el número del ${tipo.toUpperCase()}.`))
+      }
+      return this.peticion({ metodo: 'GET', ruta: `/consultas/${tipo}/${encodeURIComponent(numero.trim())}`, reintentable: true })
+    }
+    this.consultas = {
+      documento: consultarDocumento,
+      ruc: (numero) => consultarDocumento('ruc', numero),
+      dni: (numero) => consultarDocumento('dni', numero),
+    }
+
     this.establecimientos = {
       listar: (o) => this.peticion({ metodo: 'GET', ruta: '/establecimientos', query: { ruc: this.rucDe(o) }, reintentable: true }),
       // No es idempotente ni acepta Idempotency-Key: nunca se reintenta solo.
@@ -504,6 +537,14 @@ export class FactuSmart {
         })
       },
     }
+  }
+
+  /**
+   * GET / (raíz del API) — confirma que el servicio responde y dónde está la documentación. No necesita
+   * API key ni RUC y no consume crédito. Para comprobar tu llave usa `ping()`.
+   */
+  raiz(): Promise<RespuestaRaiz> {
+    return this.peticion({ metodo: 'GET', ruta: '', reintentable: true })
   }
 
   /** GET /ping — prueba la API key. No consume crédito. */

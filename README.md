@@ -72,6 +72,7 @@ Los **datos** se envían y se reciben tal cual los define el API (claves en espa
 
 | Método | Endpoint | Devuelve |
 |---|---|---|
+| `fs.raiz()` | `GET /` (sin llave) | objeto (`api`, `docs`, `estado`) |
 | `fs.ping(opciones?)` | `GET /ping` | objeto |
 | `fs.cuenta.saldo()` | `GET /account` | objeto (`creditos_disponibles`, plan, RUCs) |
 | `fs.series.listar(opciones?)` | `GET /series` | objeto |
@@ -88,6 +89,7 @@ Los **datos** se envían y se reciben tal cual los define el API (claves en espa
 | `fs.catalogos.listar(opciones?)` | `GET /catalogos` | objeto (`catalogos`, `nota`) |
 | `fs.catalogos.consultar(nombre, { q, ruc }?)` | `GET /catalogos/{nombre}` | objeto (`catalogo`, `total`, `datos`) |
 | `fs.catalogos.buscarProductoSunat(q, { limite, nivel, ruc }?)` | `GET /catalogos/productos-sunat` | objeto (`total`, `hay_mas`, `datos`) |
+| `fs.consultas.ruc(numero)` / `fs.consultas.dni(numero)` / `fs.consultas.documento(tipo, numero)` | `GET /consultas/{ruc|dni}/{numero}` | objeto (`nombre`, `direccion`, `consultas_restantes`, …) |
 | `fs.establecimientos.listar(opciones?)` | `GET /establecimientos` | objeto (`establecimientos`) |
 | `fs.establecimientos.crear(datos, opciones?)` | `POST /establecimientos` | objeto (`message`, `establecimiento`) |
 | `fs.guias.emitir(datos, opciones?)` | `POST /guias` | objeto (revisa `enviado`) |
@@ -173,6 +175,22 @@ prefijo). `limite` máximo 50; `hay_mas: true` significa que conviene afinar la 
 const { datos, hay_mas } = await fs.catalogos.buscarProductoSunat('computador', { limite: 10 })
 // datos: [{ codigo: '43211503', descripcion: '...' }, ...]
 ```
+
+### Consultar un RUC o DNI
+
+Para llenar los datos del cliente antes de emitir. No emite, no gasta créditos y **no usa el RUC
+emisor** (no manda `ruc`). Funciona con la llave de producción y con la de prueba.
+
+```js
+const r = await fs.consultas.ruc('20131312955') // o fs.consultas.dni('12345678'), fs.consultas.documento('ruc', ...)
+// { nombre, direccion, estado, condicion, ubigeo, desde_cache, consultas_restantes, periodo: 'mes' | 'dia', se_renueva }
+```
+
+Hay un cupo de consultas por cuenta (con plan: por mes; sin plan: 50 por día). Repetir un número
+dentro de 30 días responde `desde_cache: true` y no descuenta. Errores: `NoEncontrado` (404),
+`ErrorDeValidacion` (422, número inválido) y `LimiteDePeticiones` con `codigo: 'LIMITE_CONSULTAS'`
+cuando se acaba el cupo: **no se reintenta**, se renueva en `e.respuesta.se_renueva`.
+`LIMITE_PETICIONES` (429) y `CONSULTA_NO_DISPONIBLE` (503) sí se reintentan solos.
 
 ### Anexos (establecimientos)
 
@@ -287,6 +305,8 @@ Códigos más comunes (lista completa en `CODIGOS_DE_ERROR`; el API puede agrega
 | `SUNAT_NO_DISPONIBLE` | SUNAT no responde (reintentable) |
 | `LIMITE_PETICIONES` | Demasiadas peticiones por minuto (reintentable) |
 | `LIMITE_PRUEBAS_DIARIO` | 429 **no reintentable**: tope de 200 operaciones/día en RUCs demo |
+| `LIMITE_CONSULTAS` | 429 **no reintentable**: se acabó el cupo de consultas de RUC/DNI (ver `se_renueva`) |
+| `CONSULTA_NO_DISPONIBLE` | 503: SUNAT y el respaldo no responden en `consultas.*` (reintentable) |
 | `ANULACION_MIXTA` | Facturas y boletas en la misma anulación (422) |
 | `LLAVE_DE_PRUEBA_EN_PRODUCCION` | Llave de prueba usada con un RUC en producción (403) |
 | `ERROR_INTERNO` | Error del servidor |

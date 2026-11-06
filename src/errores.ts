@@ -41,6 +41,10 @@ export const CODIGOS_DE_ERROR = [
   /** 403: el plan del RUC no permite más locales (`establecimientos.crear`). */
   'LIMITE_ESTABLECIMIENTOS',
   'CATALOGO_NO_DISPONIBLE',
+  /** 429 NO reintentable: se acabó el cupo de consultas de RUC/DNI del periodo (ver `se_renueva`). */
+  'LIMITE_CONSULTAS',
+  /** 503 reintentable: SUNAT y el proveedor de respaldo no responden (`consultas.*`). */
+  'CONSULTA_NO_DISPONIBLE',
 ] as const
 
 /** Código conocido, o cualquier otro string (el tipo queda abierto a códigos nuevos). */
@@ -128,6 +132,8 @@ export class ErrorDeValidacion extends FactuSmartError {
  * - `LIMITE_PETICIONES` (`reintentable: true`): límite por minuto; el SDK reintenta solo.
  * - `LIMITE_PRUEBAS_DIARIO` (`reintentable: false`): tope de 200 operaciones/día en RUCs demo. No se
  *   reintenta; el cupo se reinicia a medianoche (hora de Perú).
+ * - `LIMITE_CONSULTAS` (`reintentable: false`): cupo de consultas de RUC/DNI agotado; se renueva en
+ *   `respuesta.se_renueva`. No se reintenta.
  */
 export class LimiteDePeticiones extends FactuSmartError {
   /** Segundos que pide esperar el API (Retry-After o "Espera N segundos"), si se pudo leer. */

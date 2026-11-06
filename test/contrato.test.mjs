@@ -10,6 +10,7 @@ const RUTA_YAML = process.env.FACTUSMART_OPENAPI || new URL('./fixtures/openapi.
 
 /** operationId → ruta del método en el SDK (DISENO_SDK.md). */
 export const METODOS = {
+  apiRoot: 'raiz',
   ping: 'ping',
   getAccount: 'cuenta.saldo',
   listSeries: 'series.listar',
@@ -33,6 +34,7 @@ export const METODOS = {
   searchSunatProductCodes: 'catalogos.buscarProductoSunat',
   listEstablishments: 'establecimientos.listar',
   createEstablishment: 'establecimientos.crear',
+  lookupDocument: 'consultas.documento',
   // Webhook (sección `webhooks` del yaml): lo manda el API; el SDK solo verifica la firma (método estático).
   webhookComprobanteEstado: 'FactuSmart.verificarFirmaWebhook',
 }

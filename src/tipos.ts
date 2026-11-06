@@ -661,3 +661,45 @@ export interface RespuestaProductosSunat {
   datos: ProductoSunat[]
   [campo: string]: unknown
 }
+
+// ───────────── Consulta de RUC / DNI ─────────────
+
+/** Tipo de documento que se puede consultar con `consultas.documento`. */
+export type TipoDocumentoConsulta = 'ruc' | 'dni'
+
+/** Respuesta de `GET /consultas/{tipo}/{numero}` (`consultas.ruc`, `consultas.dni`, `consultas.documento`). */
+export interface RespuestaConsultaDocumento {
+  success: true
+  tipo: TipoDocumentoConsulta
+  /** El número consultado. */
+  numero: string
+  /** RUC: razón social. DNI: nombres completos. */
+  nombre: string
+  /** Domicilio fiscal del RUC. `null` si la fuente no lo trae (DNI casi siempre). */
+  direccion: string | null
+  /** Estado del contribuyente (ej. `ACTIVO`). `null` cuando responde SUNAT directo. */
+  estado: string | null
+  /** Condición del domicilio (ej. `HABIDO`). `null` cuando responde SUNAT directo. */
+  condicion: string | null
+  /** Código INEI del distrito (6 dígitos). */
+  ubigeo: string | null
+  /** `true` = respondido desde la caché de 30 días; no descontó del cupo. */
+  desde_cache: boolean
+  /** Consultas que te quedan en el periodo actual. */
+  consultas_restantes: number
+  /** `mes` = cuenta con plan (cupo por mes del plan); `dia` = cuenta sin plan (50 por día). */
+  periodo: 'mes' | 'dia'
+  /** Día (`YYYY-MM-DD`) en que el cupo vuelve a empezar. */
+  se_renueva: string
+  [campo: string]: unknown
+}
+
+/** Respuesta de `GET /` (`raiz()`). */
+export interface RespuestaRaiz {
+  success: boolean
+  api: string
+  /** URL de la documentación. */
+  docs: string
+  estado: 'ok'
+  [campo: string]: unknown
+}

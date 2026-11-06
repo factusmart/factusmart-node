@@ -807,8 +807,97 @@ test('verificarFirmaWebhook: rechaza sin lanzar nunca', () => {
   }
 })
 
-test('la versión es 1.1.0 en el código y en package.json', () => {
+test('la versión es 1.2.0 en el código y en package.json', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-  assert.equal(FactuSmart.VERSION, '1.1.0')
+  assert.equal(FactuSmart.VERSION, '1.2.0')
   assert.equal(pkg.version, FactuSmart.VERSION)
+})
+
+// ───────────── consultas (RUC / DNI) y raíz ─────────────
+
+const CONSULTA_RUC = {
+  success: true,
+  tipo: 'ruc',
+  numero: '20131312955',
+  nombre: 'SUPERINTENDENCIA NACIONAL DE ADUANAS Y DE ADMINISTRACION TRIBUTARIA - SUNAT',
+  direccion: 'AV. GARCILASO DE LA VEGA - Nro: 1472  - LIMA',
+  estado: null,
+  condicion: null,
+  ubigeo: '150101',
+  desde_cache: false,
+  consultas_restantes: 29999,
+  periodo: 'mes',
+  se_renueva: '2026-11-23',
+}
+
+test('consultas.ruc / dni / documento: GET /consultas/{tipo}/{numero} sin RUC emisor (ni query ni header) y devuelve la respuesta tal cual', async () => {
+  const { fs, fetch } = cliente([{ cuerpo: CONSULTA_RUC }])
+  const r = await fs.consultas.ruc(' 20131312955 ')
+  assert.deepEqual(r, CONSULTA_RUC)
+  assert.equal(r.estado, null)
+  assert.equal(r.periodo, 'mes')
+  const ll = fetch.llamadas[0]
+  assert.equal(ll.init.method, 'GET')
+  assert.equal(ll.url, `${BASE}/consultas/ruc/20131312955`)
+  assert.equal(new URL(ll.url).searchParams.has('ruc'), false)
+  assert.equal(ll.cuerpo, undefined)
+  const nombres = Object.keys(ll.cabeceras).map((k) => k.toLowerCase())
+  assert.ok(!nombres.includes('x-ruc'), 'no debe mandar X-RUC')
+  assert.equal(ll.cabeceras['X-API-Key'], 'k_prueba')
+
+  const dni = { ...CONSULTA_RUC, tipo: 'dni', numero: '12345678', nombre: 'JUAN CARLOS PEREZ GARCIA', direccion: null, ubigeo: null, periodo: 'dia', se_renueva: '2026-11-07' }
+  const otro = cliente([{ cuerpo: dni }, { cuerpo: dni }])
+  assert.equal((await otro.fs.consultas.dni('12345678')).nombre, 'JUAN CARLOS PEREZ GARCIA')
+  assert.equal(otro.fetch.llamadas[0].url, `${BASE}/consultas/dni/12345678`)
+  await otro.fs.consultas.documento('dni', '12345678')
+  assert.equal(otro.fetch.llamadas[1].url, `${BASE}/consultas/dni/12345678`)
+
+  // validación local, sin petición
+  const local = cliente([{ cuerpo: CONSULTA_RUC }])
+  await assert.rejects(local.fs.consultas.documento('ce', '001234567'), FactuSmartError)
+  await assert.rejects(local.fs.consultas.ruc(''), FactuSmartError)
+  assert.equal(local.fetch.llamadas.length, 0)
+})
+
+test('consultas: 429 LIMITE_CONSULTAS (reintentable:false) NO se reintenta aunque traiga Retry-After', async () => {
+  const cuerpo = { success: false, message: 'Se acabó tu cupo de consultas.', codigo: 'LIMITE_CONSULTAS', reintentable: false, consultas_restantes: 0, limite_consultas: 60000, periodo: 'mes', se_renueva: '2026-11-23' }
+  const { fs, fetch, esperas } = cliente([{ status: 429, cuerpo, cabeceras: { 'Retry-After': '5' } }, { cuerpo: CONSULTA_RUC }])
+  await assert.rejects(fs.consultas.ruc('20131312955'), (e) => {
+    assert.ok(e instanceof LimiteDePeticiones, `fue ${e.constructor.name}`)
+    assert.equal(e.status, 429)
+    assert.equal(e.codigo, 'LIMITE_CONSULTAS')
+    assert.equal(e.reintentable, false)
+    assert.equal(e.respuesta.se_renueva, '2026-11-23')
+    return true
+  })
+  assert.equal(fetch.llamadas.length, 1)
+  assert.deepEqual(esperas, [])
+})
+
+test('consultas: 429 LIMITE_PETICIONES y 503 CONSULTA_NO_DISPONIBLE se reintentan; 404 y 422 no', async () => {
+  const { fs, fetch } = cliente([
+    { status: 429, cuerpo: { success: false, message: 'x', codigo: 'LIMITE_PETICIONES', reintentable: true, retry_after: 1 }, cabeceras: { 'Retry-After': '1' } },
+    { status: 503, cuerpo: { success: false, message: 'x', codigo: 'CONSULTA_NO_DISPONIBLE', reintentable: true } },
+    { cuerpo: CONSULTA_RUC },
+  ])
+  assert.equal((await fs.consultas.ruc('20131312955')).numero, '20131312955')
+  assert.equal(fetch.llamadas.length, 3)
+
+  const nf = cliente([{ status: 404, cuerpo: { success: false, message: 'No se encontró el RUC en SUNAT.', codigo: 'NO_ENCONTRADO', reintentable: false } }, { cuerpo: CONSULTA_RUC }])
+  await assert.rejects(nf.fs.consultas.ruc('20131312955'), (e) => e instanceof NoEncontrado && e.codigo === 'NO_ENCONTRADO')
+  assert.equal(nf.fetch.llamadas.length, 1)
+
+  const inv = cliente([{ status: 422, cuerpo: { success: false, message: 'Datos inválidos', codigo: 'DATOS_INVALIDOS', reintentable: false, campos: { numero: ['El RUC no es válido'] } } }])
+  await assert.rejects(inv.fs.consultas.ruc('20131312954'), (e) => e instanceof ErrorDeValidacion && e.campos.numero[0] === 'El RUC no es válido')
+  assert.equal(inv.fetch.llamadas.length, 1)
+
+  for (const c of ['LIMITE_CONSULTAS', 'CONSULTA_NO_DISPONIBLE']) assert.ok(CODIGOS_DE_ERROR.includes(c), c)
+})
+
+test('raiz(): GET a la URL base sin query', async () => {
+  const resp = { success: true, api: 'FactuSmart API de facturación', docs: 'https://factusmart.pe/api-facturacion-electronica/docs', estado: 'ok' }
+  const { fs, fetch } = cliente([{ cuerpo: resp }])
+  assert.deepEqual(await fs.raiz(), resp)
+  assert.equal(fetch.llamadas[0].url, BASE)
+  assert.equal(fetch.llamadas[0].init.method, 'GET')
 })

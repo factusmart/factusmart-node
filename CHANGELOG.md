@@ -1,5 +1,18 @@
 # Cambios
 
+## 1.2.0 — 2026-11-06
+
+- Nuevo recurso `consultas` (`GET /consultas/{tipo}/{numero}`): `consultas.ruc(numero)`,
+  `consultas.dni(numero)` y `consultas.documento(tipo, numero)`. Devuelve nombre, dirección, estado,
+  condición, ubigeo, `desde_cache` y el cupo (`consultas_restantes`, `periodo`, `se_renueva`). No
+  manda el RUC emisor y se reintenta como un GET. Nuevos tipos `RespuestaConsultaDocumento` y
+  `TipoDocumentoConsulta`.
+- 429 `LIMITE_CONSULTAS` (`reintentable: false`) lanza `LimiteDePeticiones` tras una sola petición;
+  `LIMITE_PETICIONES` y 503 `CONSULTA_NO_DISPONIBLE` sí se reintentan. Nuevos códigos en
+  `CODIGOS_DE_ERROR`: `LIMITE_CONSULTAS`, `CONSULTA_NO_DISPONIBLE`.
+- Nuevo `raiz()` (`GET /`, operación `apiRoot`): confirma que el servicio responde, sin llave. Tipo
+  `RespuestaRaiz`.
+
 ## 1.1.0 — 2026-10-14
 
 - Los errores traen `codigo` (ej. `NO_AUTENTICADO`, `DATOS_INVALIDOS`), `reintentable` y `campos`
