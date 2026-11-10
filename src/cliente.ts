@@ -1,4 +1,5 @@
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 import { calcularComprobante } from './calculo.js'
 import {
   ErrorDeAutenticacion,
@@ -10,6 +11,11 @@ import {
   SinCreditos,
 } from './errores.js'
 import type {
+  CertificadoEntrada,
+  DatosSunatRuc,
+  RespuestaConfiguracionRuc,
+  RespuestaSubirCertificado,
+  RespuestaVerificarRuc,
   DatosAnulacion,
   DatosComprobante,
   DatosEstablecimiento,
@@ -54,7 +60,7 @@ import type {
   Totales,
 } from './tipos.js'
 
-export const VERSION = '1.2.0'
+export const VERSION = '1.3.0'
 
 type FuncionFetch = (url: string, init?: Record<string, unknown>) => Promise<Response>
 
@@ -81,7 +87,7 @@ export interface OpcionesCliente {
 }
 
 interface Peticion {
-  metodo: 'GET' | 'POST' | 'PATCH'
+  metodo: 'GET' | 'POST' | 'PATCH' | 'PUT'
   ruta: string
   query?: Record<string, string | number | undefined | null>
   cuerpo?: Record<string, unknown>
@@ -91,6 +97,8 @@ interface Peticion {
   /** Reintentar también ante 409 (solo emitir con Idempotency-Key). */
   reintentarEn409?: boolean
   binario?: boolean
+  /** Valores que nunca deben salir en un error (claves, certificado): se reemplazan por `***`. */
+  secretos?: string[]
 }
 
 const ESPERA_MAXIMA_MS = 60_000
@@ -101,6 +109,81 @@ const FORMATOS_PDF = ['a4', 'a5', 'ticket', 'ticket80', 'ticket58', 'ticket50'] 
 function errorLocalDeValidacion(campo: string, mensaje: string): ErrorDeValidacion {
   const campos = { [campo]: [mensaje] }
   return new ErrorDeValidacion(mensaje, 422, { success: false, message: mensaje, codigo: 'DATOS_INVALIDOS', reintentable: false, campos }, campos)
+}
+
+const RUC_11 = /^\d{11}$/
+
+/** RUC del path de /rucs/{ruc}/*: 11 dígitos, validado antes de hacer la petición. */
+function rucDeRuta(ruc: unknown, metodo: string): string {
+  const r = typeof ruc === 'string' ? ruc.trim() : typeof ruc === 'number' ? String(ruc) : ''
+  if (!RUC_11.test(r)) {
+    throw errorLocalDeValidacion('ruc', `rucs.${metodo}(ruc, ...): el RUC debe tener 11 dígitos.`)
+  }
+  return r
+}
+
+/**
+ * Lee el certificado (ruta del archivo o bytes) y lo devuelve en base64. El mensaje de error nunca
+ * incluye el contenido: si el string no parece una ruta (p. ej. ya es base64), no se repite.
+ */
+async function certificadoEnBase64(certificado: CertificadoEntrada): Promise<string> {
+  let bytes: Buffer
+  if (typeof certificado === 'string') {
+    const ruta = certificado.trim()
+    if (ruta === '') {
+      throw errorLocalDeValidacion('certificado', 'rucs.subirCertificado: pasa la ruta del .pfx / .p12 o su contenido (Buffer).')
+    }
+    try {
+      bytes = await readFile(ruta)
+    } catch (e) {
+      const codigo = (e as NodeJS.ErrnoException)?.code
+      const pareceRuta = ruta.length <= 400 && !/[\r\n]/.test(ruta)
+      const donde = pareceRuta
+        ? `"${ruta}"`
+        : '(el texto recibido no parece una ruta; si ya tienes el contenido, pásalo como Buffer)'
+      const motivo =
+        codigo === 'ENOENT' ? 'no existe' : codigo === 'EISDIR' ? 'es una carpeta, no un archivo' : `no se pudo leer (${codigo ?? 'error'})`
+      throw errorLocalDeValidacion('certificado', `rucs.subirCertificado: el archivo del certificado ${donde} ${motivo}.`)
+    }
+  } else if (Buffer.isBuffer(certificado)) {
+    bytes = certificado
+  } else if (certificado instanceof Uint8Array) {
+    bytes = Buffer.from(certificado.buffer, certificado.byteOffset, certificado.byteLength)
+  } else if (certificado instanceof ArrayBuffer) {
+    bytes = Buffer.from(certificado)
+  } else {
+    throw errorLocalDeValidacion(
+      'certificado',
+      'rucs.subirCertificado: certificado debe ser una ruta (string) o bytes (Buffer, Uint8Array o ArrayBuffer).',
+    )
+  }
+  if (bytes.length === 0) throw errorLocalDeValidacion('certificado', 'rucs.subirCertificado: el certificado está vacío.')
+  return bytes.toString('base64')
+}
+
+/** Reemplaza cada secreto por `***` en strings, arrays y objetos (copia; no muta el original). */
+function ocultar(valor: unknown, secretos: string[]): unknown {
+  if (typeof valor === 'string') return secretos.reduce((t, s) => t.split(s).join('***'), valor)
+  if (Array.isArray(valor)) return valor.map((v) => ocultar(v, secretos))
+  if (esObjeto(valor)) return Object.fromEntries(Object.entries(valor).map(([k, v]) => [k, ocultar(v, secretos)]))
+  return valor
+}
+
+/** Quita los secretos del mensaje, la respuesta y los campos del error (por si el API los repitiera). */
+function limpiarError(e: unknown, secretos: string[]): unknown {
+  if (!(e instanceof FactuSmartError) || secretos.length === 0) return e
+  const x = e as unknown as Record<string, unknown>
+  for (const k of ['message', 'mensaje', 'stack', 'respuesta', 'campos', 'errores']) {
+    if (!(k in x)) continue
+    const desc = Object.getOwnPropertyDescriptor(e, k)
+    Object.defineProperty(e, k, {
+      value: ocultar(x[k], secretos),
+      writable: desc?.writable ?? true,
+      enumerable: desc?.enumerable ?? false,
+      configurable: true,
+    })
+  }
+  return e
 }
 
 const dormirReal = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
@@ -346,6 +429,23 @@ export class FactuSmart {
     crear: (datos: DatosNuevoRuc) => Promise<RespuestaCrearRuc>
     /** PATCH /rucs/{ruc}/activation — no se reintenta automáticamente. */
     activar: (ruc: string, activo: boolean) => Promise<RespuestaActivacionRuc>
+    /**
+     * PUT /rucs/{ruc}/certificado — instala el certificado digital (.pfx / .p12). `certificado` es la
+     * ruta del archivo o sus bytes; el SDK lo manda en base64. Comprueba clave, vigencia y que sea del
+     * RUC. La llave de prueba no puede (403 SIN_PERMISO). No se reintenta. La clave y el contenido
+     * nunca aparecen en los errores.
+     */
+    subirCertificado: (ruc: string, certificado: CertificadoEntrada, clave: string) => Promise<RespuestaSubirCertificado>
+    /**
+     * PUT /rucs/{ruc}/sunat — usuario/clave SOL y/o entorno (`prueba` | `produccion`). No llama a
+     * SUNAT (para eso, `verificar`). Falta algo para producción → 422 con `respuesta.faltantes`. No se
+     * reintenta. La clave SOL nunca aparece en los errores.
+     */
+    configurarSunat: (ruc: string, datos: DatosSunatRuc) => Promise<RespuestaConfiguracionRuc>
+    /** POST /rucs/{ruc}/verificar — prueba certificado y SOL contra SUNAT sin emitir nada. No consume crédito. */
+    verificar: (ruc: string) => Promise<RespuestaVerificarRuc>
+    /** GET /rucs/{ruc}/configuracion — entorno, certificado, SOL (enmascarado) y qué falta. No llama a SUNAT. */
+    configuracion: (ruc: string) => Promise<RespuestaConfiguracionRuc>
   }
 
   constructor(opciones: OpcionesCliente) {
@@ -536,6 +636,41 @@ export class FactuSmart {
           reintentable: false,
         })
       },
+      // Configuración del RUC: el RUC solo va en la ruta (el API ignora X-RUC y `ruc` del cuerpo).
+      subirCertificado: async (ruc, certificado, clave) => {
+        const r = rucDeRuta(ruc, 'subirCertificado')
+        if (typeof clave !== 'string' || clave === '') {
+          throw errorLocalDeValidacion('clave', 'rucs.subirCertificado(ruc, certificado, clave): falta la clave del certificado.')
+        }
+        const base64 = await certificadoEnBase64(certificado)
+        return this.peticion({
+          metodo: 'PUT',
+          ruta: `/rucs/${r}/certificado`,
+          cuerpo: { certificado: base64, clave },
+          reintentable: false,
+          secretos: [clave, base64],
+        })
+      },
+      configurarSunat: async (ruc, datos) => {
+        const r = rucDeRuta(ruc, 'configurarSunat')
+        const uso = 'rucs.configurarSunat(ruc, datos): pasa { usuario_sol, clave_sol } y/o { entorno }.'
+        if (!esObjeto(datos)) throw errorLocalDeValidacion('datos', uso)
+        const cuerpo: Record<string, unknown> = {}
+        for (const k of ['usuario_sol', 'clave_sol', 'entorno'] as const) {
+          if (datos[k] !== undefined && datos[k] !== null) cuerpo[k] = datos[k]
+        }
+        if (Object.keys(cuerpo).length === 0) throw errorLocalDeValidacion('datos', uso)
+        if (cuerpo.entorno !== undefined && cuerpo.entorno !== 'prueba' && cuerpo.entorno !== 'produccion') {
+          throw errorLocalDeValidacion('entorno', "rucs.configurarSunat: entorno debe ser 'prueba' o 'produccion'.")
+        }
+        const secretos = typeof cuerpo.clave_sol === 'string' && cuerpo.clave_sol !== '' ? [cuerpo.clave_sol] : []
+        return this.peticion({ metodo: 'PUT', ruta: `/rucs/${r}/sunat`, cuerpo, reintentable: false, secretos })
+      },
+      // POST sin efectos (no emite ni guarda nada): se reintenta como un GET. Sin cuerpo.
+      verificar: async (ruc) =>
+        this.peticion({ metodo: 'POST', ruta: `/rucs/${rucDeRuta(ruc, 'verificar')}/verificar`, reintentable: true }),
+      configuracion: async (ruc) =>
+        this.peticion({ metodo: 'GET', ruta: `/rucs/${rucDeRuta(ruc, 'configuracion')}/configuracion`, reintentable: true }),
     }
   }
 
@@ -640,6 +775,16 @@ export class FactuSmart {
   }
 
   private async peticion<T>(p: Peticion): Promise<T> {
+    const secretos = (p.secretos ?? []).filter((x) => typeof x === 'string' && x !== '')
+    if (secretos.length === 0) return this.peticionCruda<T>(p)
+    try {
+      return await this.peticionCruda<T>(p)
+    } catch (e) {
+      throw limpiarError(e, secretos)
+    }
+  }
+
+  private async peticionCruda<T>(p: Peticion): Promise<T> {
     const url = this.construirUrl(p.ruta, p.query)
     const cabeceras: Record<string, string> = {
       'X-API-Key': this.apiKey,

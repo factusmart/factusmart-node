@@ -1,5 +1,23 @@
 # Cambios
 
+## 1.3.0 — 2026-11-10
+
+- Configuración del RUC por API (tag «Configuración del RUC» del openapi.yaml), en el recurso `rucs`:
+  - `rucs.subirCertificado(ruc, certificado, clave)` (`PUT /rucs/{ruc}/certificado`): `certificado`
+    es la ruta del .pfx / .p12 o sus bytes (`Buffer`, `Uint8Array`, `ArrayBuffer`); el SDK lo lee y
+    lo manda en base64. Ruta inexistente → `ErrorDeValidacion` local, sin petición. No se reintenta.
+  - `rucs.configurarSunat(ruc, { usuario_sol, clave_sol, entorno })` (`PUT /rucs/{ruc}/sunat`): solo
+    manda los campos dados. No se reintenta.
+  - `rucs.verificar(ruc)` (`POST /rucs/{ruc}/verificar`, sin cuerpo) y `rucs.configuracion(ruc)`
+    (`GET /rucs/{ruc}/configuracion`): se reintentan como un GET.
+  - El RUC va solo en la ruta (nunca `?ruc=`, `X-RUC` ni en el cuerpo) y se valida (11 dígitos)
+    antes de llamar.
+  - La clave del certificado, la clave SOL y el contenido del certificado se reemplazan por `***` en
+    el mensaje, la respuesta, los campos y el stack de cualquier error de estas llamadas.
+  - Tipos nuevos: `CertificadoEntrada`, `PeticionSubirCertificado`, `RespuestaSubirCertificado`,
+    `DatosSunatRuc`, `EntornoRuc`, `FaltanteConfiguracion`, `RespuestaConfiguracionRuc`,
+    `ComprobacionConfiguracion`, `RespuestaVerificarRuc`.
+
 ## 1.2.0 — 2026-11-06
 
 - Nuevo recurso `consultas` (`GET /consultas/{tipo}/{numero}`): `consultas.ruc(numero)`,

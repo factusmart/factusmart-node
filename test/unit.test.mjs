@@ -807,9 +807,9 @@ test('verificarFirmaWebhook: rechaza sin lanzar nunca', () => {
   }
 })
 
-test('la versión es 1.2.0 en el código y en package.json', () => {
+test('la versión es 1.3.0 en el código y en package.json', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-  assert.equal(FactuSmart.VERSION, '1.2.0')
+  assert.equal(FactuSmart.VERSION, '1.3.0')
   assert.equal(pkg.version, FactuSmart.VERSION)
 })
 
@@ -900,4 +900,216 @@ test('raiz(): GET a la URL base sin query', async () => {
   assert.deepEqual(await fs.raiz(), resp)
   assert.equal(fetch.llamadas[0].url, BASE)
   assert.equal(fetch.llamadas[0].init.method, 'GET')
+})
+
+// ───────────── Configuración del RUC (certificado, SOL, verificar, configuración) ─────────────
+
+const RUC_CFG = '20777666555'
+const CLAVE_PFX = 'ClaveSuperSecreta#2026'
+const CLAVE_SOL = 'SolSecreta-9x'
+const BYTES_PFX = Buffer.from([0x30, 0x82, 0x0a, 0x5e, 0x02, 0x01, 0x03, 0xff, 0x00, 0x7f])
+const CONFIG_OK = {
+  success: true,
+  ruc: RUC_CFG,
+  nombre: 'API TENANT CLEAN SAC',
+  entorno: 'produccion',
+  certificado: { instalado: true, vence: '2027-11-10', dias_para_vencer: 364 },
+  sol: { configurado: true, usuario: 'FA*****1' },
+  envio: 'sunat',
+  listo_para_produccion: true,
+  faltantes: [],
+}
+const SUBIDA_OK = { success: true, ruc: RUC_CFG, certificado: { instalado: true, titular: 'API TENANT CLEAN SAC', vence: '2027-11-10', dias_para_vencer: 364, ruc_coincide: true } }
+
+function sinXRuc(ll) {
+  const nombres = Object.keys(ll.cabeceras).map((k) => k.toLowerCase())
+  assert.ok(!nombres.includes('x-ruc'), 'no debe mandar X-RUC')
+  assert.equal(new URL(ll.url).searchParams.has('ruc'), false, 'no debe mandar ?ruc=')
+}
+
+test('rucs.subirCertificado desde Buffer, Uint8Array y ArrayBuffer: PUT /rucs/{ruc}/certificado con base64 + clave, sin X-RUC ni ruc', async () => {
+  const esperado = BYTES_PFX.toString('base64')
+  const u8 = new Uint8Array(BYTES_PFX)
+  for (const entrada of [BYTES_PFX, u8, u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength)]) {
+    const { fs, fetch } = cliente([{ cuerpo: SUBIDA_OK }])
+    const r = await fs.rucs.subirCertificado(RUC_CFG, entrada, CLAVE_PFX)
+    assert.deepEqual(r, SUBIDA_OK)
+    const ll = fetch.llamadas[0]
+    assert.equal(ll.init.method, 'PUT')
+    assert.equal(ll.url, `${BASE}/rucs/${RUC_CFG}/certificado`)
+    assert.deepEqual(ll.cuerpo, { certificado: esperado, clave: CLAVE_PFX })
+    assert.equal(ll.cabeceras['Content-Type'], 'application/json')
+    sinXRuc(ll)
+  }
+  // Uint8Array que es una vista parcial de un buffer más grande: solo cuentan sus bytes.
+  const grande = Buffer.concat([Buffer.from('xxxx'), BYTES_PFX, Buffer.from('yyyy')])
+  const vista = new Uint8Array(grande.buffer, grande.byteOffset + 4, BYTES_PFX.length)
+  const { fs, fetch } = cliente([{ cuerpo: SUBIDA_OK }])
+  await fs.rucs.subirCertificado(RUC_CFG, vista, CLAVE_PFX)
+  assert.equal(fetch.llamadas[0].cuerpo.certificado, esperado)
+})
+
+test('rucs.subirCertificado desde una ruta: el SDK lee el archivo y manda su base64', async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = mkdtempSync(join(tmpdir(), 'fs-sdk-cert-'))
+  try {
+    const ruta = join(dir, 'empresa.pfx')
+    writeFileSync(ruta, BYTES_PFX)
+    const { fs, fetch } = cliente([{ cuerpo: SUBIDA_OK }])
+    await fs.rucs.subirCertificado(` ${RUC_CFG} `, ruta, CLAVE_PFX)
+    assert.equal(fetch.llamadas[0].url, `${BASE}/rucs/${RUC_CFG}/certificado`)
+    assert.equal(fetch.llamadas[0].cuerpo.certificado, BYTES_PFX.toString('base64'))
+    assert.equal(Buffer.from(fetch.llamadas[0].cuerpo.certificado, 'base64').equals(BYTES_PFX), true)
+
+    // ruta inexistente: error local claro, sin petición y sin la clave
+    const local = cliente([{ cuerpo: SUBIDA_OK }])
+    const noExiste = join(dir, 'no-existe.pfx')
+    await assert.rejects(local.fs.rucs.subirCertificado(RUC_CFG, noExiste, CLAVE_PFX), (e) => {
+      assert.ok(e instanceof ErrorDeValidacion)
+      assert.match(e.message, /no existe/)
+      assert.ok(e.message.includes(noExiste))
+      assert.ok(!JSON.stringify({ m: e.message, r: e.respuesta, c: e.campos }).includes(CLAVE_PFX))
+      return true
+    })
+    // carpeta en vez de archivo
+    await assert.rejects(local.fs.rucs.subirCertificado(RUC_CFG, dir, CLAVE_PFX), ErrorDeValidacion)
+    // contenido base64 pasado como string por error: el mensaje no lo repite
+    const b64Largo = BYTES_PFX.toString('base64').repeat(80)
+    await assert.rejects(local.fs.rucs.subirCertificado(RUC_CFG, b64Largo, CLAVE_PFX), (e) => {
+      assert.ok(!e.message.includes(b64Largo.slice(0, 60)), 'no debe repetir el contenido')
+      assert.match(e.message, /Buffer/)
+      return true
+    })
+    assert.equal(local.fetch.llamadas.length, 0)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('rucs.subirCertificado: validaciones locales (RUC, clave, certificado vacío) sin petición', async () => {
+  const { fs, fetch } = cliente([{ cuerpo: SUBIDA_OK }])
+  await assert.rejects(fs.rucs.subirCertificado('2077766655', BYTES_PFX, CLAVE_PFX), (e) => e instanceof ErrorDeValidacion && e.campos.ruc?.length === 1)
+  await assert.rejects(fs.rucs.subirCertificado('2077766655a', BYTES_PFX, CLAVE_PFX), ErrorDeValidacion)
+  await assert.rejects(fs.rucs.subirCertificado(RUC_CFG, BYTES_PFX, ''), (e) => e instanceof ErrorDeValidacion && e.campos.clave?.length === 1)
+  await assert.rejects(fs.rucs.subirCertificado(RUC_CFG, Buffer.alloc(0), CLAVE_PFX), ErrorDeValidacion)
+  await assert.rejects(fs.rucs.subirCertificado(RUC_CFG, 123, CLAVE_PFX), ErrorDeValidacion)
+  assert.equal(fetch.llamadas.length, 0)
+})
+
+test('rucs.subirCertificado: 422 del API — ni el mensaje, ni la respuesta, ni el stack, ni el JSON del error traen la clave o el certificado', async () => {
+  const b64 = BYTES_PFX.toString('base64')
+  // El API real no repite la clave; se simula el peor caso (un servidor que la devolviera).
+  const cuerpo = {
+    success: false,
+    message: `El certificado no abre con esa clave (${CLAVE_PFX}). Revisa la clave.`,
+    codigo: 'DATOS_INVALIDOS',
+    reintentable: false,
+    campos: { clave: [`La clave ${CLAVE_PFX} es incorrecta.`], certificado: [`contenido ${b64}`] },
+    entrada: { certificado: b64, clave: CLAVE_PFX },
+  }
+  const { fs, fetch } = cliente([{ status: 422, cuerpo }, { cuerpo: SUBIDA_OK }])
+  await assert.rejects(fs.rucs.subirCertificado(RUC_CFG, BYTES_PFX, CLAVE_PFX), (e) => {
+    assert.ok(e instanceof ErrorDeValidacion)
+    assert.equal(e.status, 422)
+    assert.equal(e.codigo, 'DATOS_INVALIDOS')
+    const todo = [e.message, e.mensaje, String(e.stack), JSON.stringify(e), JSON.stringify(e.respuesta), JSON.stringify(e.campos), JSON.stringify(e.errores), String(e)].join('\n')
+    assert.ok(!todo.includes(CLAVE_PFX), 'filtró la clave')
+    assert.ok(!todo.includes(b64), 'filtró el certificado')
+    assert.match(e.message, /no abre con esa clave \(\*\*\*\)/)
+    assert.equal(e.campos.clave[0], 'La clave *** es incorrecta.')
+    return true
+  })
+  assert.equal(fetch.llamadas.length, 1, 'PUT del certificado no se reintenta')
+})
+
+test('rucs.subirCertificado: 503 no se reintenta y el error de red no trae la clave', async () => {
+  const { fs, fetch } = cliente([{ status: 503, cuerpo: { success: false, message: 'caído' } }, { cuerpo: SUBIDA_OK }])
+  await assert.rejects(fs.rucs.subirCertificado(RUC_CFG, BYTES_PFX, CLAVE_PFX), FactuSmartError)
+  assert.equal(fetch.llamadas.length, 1)
+
+  const red = cliente([new TypeError(`fetch failed ${CLAVE_PFX}`)])
+  await assert.rejects(red.fs.rucs.subirCertificado(RUC_CFG, BYTES_PFX, CLAVE_PFX), (e) => {
+    assert.equal(e.status, 0)
+    assert.ok(!e.message.includes(CLAVE_PFX) && !String(e.stack).includes(CLAVE_PFX))
+    return true
+  })
+})
+
+test('rucs.configurarSunat: PUT /rucs/{ruc}/sunat solo con los campos dados, sin X-RUC ni ruc, y devuelve la configuración', async () => {
+  const { fs, fetch } = cliente([{ cuerpo: CONFIG_OK }, { cuerpo: CONFIG_OK }])
+  const r = await fs.rucs.configurarSunat(RUC_CFG, { usuario_sol: 'FACTURA1', clave_sol: CLAVE_SOL, entorno: 'produccion' })
+  assert.deepEqual(r, CONFIG_OK)
+  const ll = fetch.llamadas[0]
+  assert.equal(ll.init.method, 'PUT')
+  assert.equal(ll.url, `${BASE}/rucs/${RUC_CFG}/sunat`)
+  assert.deepEqual(ll.cuerpo, { usuario_sol: 'FACTURA1', clave_sol: CLAVE_SOL, entorno: 'produccion' })
+  sinXRuc(ll)
+
+  await fs.rucs.configurarSunat(RUC_CFG, { entorno: 'prueba', usuario_sol: undefined })
+  assert.deepEqual(fetch.llamadas[1].cuerpo, { entorno: 'prueba' })
+
+  const local = cliente([{ cuerpo: CONFIG_OK }])
+  await assert.rejects(local.fs.rucs.configurarSunat(RUC_CFG, {}), ErrorDeValidacion)
+  await assert.rejects(local.fs.rucs.configurarSunat(RUC_CFG, { entorno: 'demo2' }), (e) => e instanceof ErrorDeValidacion && e.campos.entorno?.length === 1)
+  await assert.rejects(local.fs.rucs.configurarSunat('123', { entorno: 'prueba' }), ErrorDeValidacion)
+  assert.equal(local.fetch.llamadas.length, 0)
+})
+
+test('rucs.configurarSunat: 422 con faltantes — el error trae faltantes pero nunca la clave SOL', async () => {
+  const cuerpo = {
+    success: false,
+    message: `Para pasar a producción falta: sol. Clave recibida: ${CLAVE_SOL}`,
+    codigo: 'DATOS_INVALIDOS',
+    reintentable: false,
+    campos: { entorno: ['Falta: sol'], clave_sol: [`no válida: ${CLAVE_SOL}`] },
+    faltantes: ['sol'],
+  }
+  const { fs, fetch } = cliente([{ status: 422, cuerpo }, { cuerpo: CONFIG_OK }])
+  await assert.rejects(fs.rucs.configurarSunat(RUC_CFG, { usuario_sol: 'FACTURA1', clave_sol: CLAVE_SOL, entorno: 'produccion' }), (e) => {
+    assert.ok(e instanceof ErrorDeValidacion)
+    assert.deepEqual(e.respuesta.faltantes, ['sol'])
+    assert.deepEqual(e.campos.entorno, ['Falta: sol'])
+    const todo = [e.message, e.mensaje, String(e.stack), JSON.stringify(e), JSON.stringify(e.respuesta), JSON.stringify(e.errores)].join('\n')
+    assert.ok(!todo.includes(CLAVE_SOL), 'filtró la clave SOL')
+    return true
+  })
+  assert.equal(fetch.llamadas.length, 1, 'PUT /sunat no se reintenta')
+})
+
+test('rucs.verificar: POST /rucs/{ruc}/verificar sin cuerpo ni X-RUC; se reintenta ante 503', async () => {
+  const resp = {
+    success: true,
+    ruc: RUC_CFG,
+    listo_para_emitir: false,
+    entorno: 'produccion',
+    checks: { certificado: { ok: true, mensaje: 'Certificado vigente.' }, sol: { ok: false, mensaje: 'SUNAT rechazó el usuario o la clave SOL.' } },
+  }
+  const { fs, fetch } = cliente([{ status: 503, cuerpo: { success: false, message: 'caído' } }, { cuerpo: resp }])
+  const r = await fs.rucs.verificar(RUC_CFG)
+  assert.deepEqual(r, resp)
+  assert.equal(r.checks.sol.ok, false)
+  assert.equal(fetch.llamadas.length, 2)
+  const ll = fetch.llamadas[1]
+  assert.equal(ll.init.method, 'POST')
+  assert.equal(ll.url, `${BASE}/rucs/${RUC_CFG}/verificar`)
+  assert.equal(ll.init.body, undefined)
+  assert.equal(ll.cabeceras['Content-Type'], undefined)
+  sinXRuc(ll)
+})
+
+test('rucs.configuracion: GET /rucs/{ruc}/configuracion sin X-RUC ni ?ruc= y devuelve la respuesta tal cual', async () => {
+  const recien = { ...CONFIG_OK, entorno: 'prueba', certificado: { instalado: false, vence: null, dias_para_vencer: null }, sol: { configurado: false, usuario: 'MODDATOS' }, listo_para_produccion: false, faltantes: ['certificado', 'sol'] }
+  const { fs, fetch } = cliente([{ cuerpo: recien }])
+  const r = await fs.rucs.configuracion(RUC_CFG)
+  assert.deepEqual(r, recien)
+  const ll = fetch.llamadas[0]
+  assert.equal(ll.init.method, 'GET')
+  assert.equal(ll.url, `${BASE}/rucs/${RUC_CFG}/configuracion`)
+  assert.equal(ll.cuerpo, undefined)
+  sinXRuc(ll)
+
+  const nf = cliente([{ status: 404, cuerpo: { success: false, message: 'Ese RUC no pertenece a esta cuenta o no existe.', codigo: 'NO_ENCONTRADO', reintentable: false } }])
+  await assert.rejects(nf.fs.rucs.configuracion(RUC_CFG), (e) => e instanceof NoEncontrado && e.codigo === 'NO_ENCONTRADO')
 })

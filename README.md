@@ -97,6 +97,10 @@ Los **datos** se envían y se reciben tal cual los define el API (claves en espa
 | `fs.rucs.listar()` | `GET /rucs` | objeto |
 | `fs.rucs.crear({ ruc, empresa, correo, clave })` | `POST /rucs` | objeto (`ya_existia`) |
 | `fs.rucs.activar(ruc, activo)` | `PATCH /rucs/{ruc}/activation` | objeto |
+| `fs.rucs.subirCertificado(ruc, rutaOBytes, clave)` | `PUT /rucs/{ruc}/certificado` | objeto (`certificado.vence`, `ruc_coincide`) |
+| `fs.rucs.configurarSunat(ruc, { usuario_sol, clave_sol, entorno }?)` | `PUT /rucs/{ruc}/sunat` | objeto (configuración) |
+| `fs.rucs.verificar(ruc)` | `POST /rucs/{ruc}/verificar` | objeto (`listo_para_emitir`, `checks`) |
+| `fs.rucs.configuracion(ruc)` | `GET /rucs/{ruc}/configuracion` | objeto (`entorno`, `faltantes`, …) |
 
 Ayudante: `FactuSmart.calcularComprobante(items)` (también `import { calcularComprobante } from 'factusmart'`).
 
@@ -191,6 +195,47 @@ dentro de 30 días responde `desde_cache: true` y no descuenta. Errores: `NoEnco
 `ErrorDeValidacion` (422, número inválido) y `LimiteDePeticiones` con `codigo: 'LIMITE_CONSULTAS'`
 cuando se acaba el cupo: **no se reintenta**, se renueva en `e.respuesta.se_renueva`.
 `LIMITE_PETICIONES` (429) y `CONSULTA_NO_DISPONIBLE` (503) sí se reintentan solos.
+
+### Configurar un RUC por API (certificado, SOL y entorno)
+
+Lo mismo que las pantallas «Certificado» y «SUNAT» del panel, para dejar un RUC listo para
+producción sin entrar al sistema web. El RUC va **solo en la ruta** (11 dígitos; el SDK lo valida
+antes de llamar). No consume crédito.
+
+```js
+const ruc = '20777666555'
+
+// 1. Certificado digital: ruta del .pfx / .p12 o sus bytes (Buffer, Uint8Array, ArrayBuffer).
+//    El SDK lee el archivo y lo manda en base64.
+const { certificado, aviso } = await fs.rucs.subirCertificado(ruc, './certificados/empresa.pfx', process.env.CLAVE_PFX)
+// certificado: { instalado: true, titular, vence: '2027-11-10', dias_para_vencer, ruc_coincide: true | null }
+
+// 2. Usuario secundario SOL y paso a producción (pueden ir juntos o por separado).
+await fs.rucs.configurarSunat(ruc, { usuario_sol: 'FACTURA1', clave_sol: process.env.CLAVE_SOL })
+await fs.rucs.configurarSunat(ruc, { entorno: 'produccion' }) // o 'prueba'
+
+// 3. Prueba real contra SUNAT, sin emitir nada.
+const v = await fs.rucs.verificar(ruc)
+// { listo_para_emitir, entorno, checks: { certificado: { ok, mensaje }, sol: { ok, mensaje } } }  (ok: true | false | null)
+
+// Ver el estado en cualquier momento (no llama a SUNAT):
+const cfg = await fs.rucs.configuracion(ruc)
+// { entorno, certificado: { instalado, vence, dias_para_vencer }, sol: { configurado, usuario: 'FA*****1' },
+//   envio: 'sunat' | 'ose' | 'pse', listo_para_produccion, faltantes: ['certificado', 'sol', ...] }
+```
+
+- Certificado con clave incorrecta, vencido o de otro RUC → `ErrorDeValidacion` (422). Si pasas
+  una ruta que no existe, el SDK lanza `ErrorDeValidacion` sin llamar al API.
+- Pasar a `produccion` sin certificado vigente o sin SOL → `ErrorDeValidacion` con
+  `e.respuesta.faltantes` (no se guarda nada).
+- La llave de **prueba** (`fs_test_…`) no puede subir certificado ni cambiar SOL/entorno
+  (`RucNoAutorizado`, `codigo: 'SIN_PERMISO'`); `verificar` y `configuracion` sí.
+- `subirCertificado` y `configurarSunat` **no se reintentan** solos; `verificar` y `configuracion`
+  sí (como un GET).
+- **Seguridad:** la clave del certificado, la clave SOL y el contenido del certificado nunca
+  aparecen en los mensajes ni en los datos de los errores del SDK (se reemplazan por `***`). El API
+  tampoco las devuelve. No las guardes en el código: léelas de variables de entorno o de tu gestor
+  de secretos.
 
 ### Anexos (establecimientos)
 

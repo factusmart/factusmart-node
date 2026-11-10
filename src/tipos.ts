@@ -703,3 +703,98 @@ export interface RespuestaRaiz {
   estado: 'ok'
   [campo: string]: unknown
 }
+
+// ───────────── Configuración del RUC (/rucs/{ruc}/certificado, /sunat, /verificar, /configuracion) ─────────────
+
+/** Entorno de emisión: `prueba` = beta de SUNAT (sin validez fiscal) · `produccion` = comprobantes reales. */
+export type EntornoRuc = 'prueba' | 'produccion'
+
+/**
+ * Certificado para `rucs.subirCertificado`: ruta del archivo .pfx / .p12 (string) o su contenido en
+ * bytes. El SDK lo lee y lo codifica en base64; nunca lo escribe en mensajes de error.
+ */
+export type CertificadoEntrada = string | Buffer | Uint8Array | ArrayBuffer
+
+/** Cuerpo de `PUT /rucs/{ruc}/certificado` (lo arma el SDK). */
+export interface PeticionSubirCertificado {
+  /** Contenido del .pfx / .p12 en base64 (máx. 5 MB). */
+  certificado: string
+  /** Clave del certificado. No se guarda ni se devuelve. */
+  clave: string
+}
+
+export interface RespuestaSubirCertificado {
+  success: true
+  ruc: string
+  certificado: {
+    instalado: true
+    /** CN (u O) del titular del certificado. */
+    titular: string | null
+    /** Fecha de vencimiento (`YYYY-MM-DD`). */
+    vence: string
+    dias_para_vencer: number
+    /** `true` si el RUC del titular es el del path; `null` si el titular no trae RUC (no se pudo comprobar). */
+    ruc_coincide: boolean | null
+  }
+  /** Solo si `ruc_coincide` es `null`. */
+  aviso?: string
+  [campo: string]: unknown
+}
+
+/** Cuerpo de `PUT /rucs/{ruc}/sunat`: `usuario_sol` + `clave_sol`, o `entorno`, o los tres. */
+export interface DatosSunatRuc {
+  /** Usuario secundario SOL (`FACTURA1`), con o sin el RUC delante. Va junto con `clave_sol`. */
+  usuario_sol?: string
+  clave_sol?: string
+  /** Para pasar a `produccion` hacen falta certificado vigente y usuario/clave SOL. */
+  entorno?: EntornoRuc
+}
+
+export type FaltanteConfiguracion = 'certificado' | 'certificado_vencido' | 'certificado_sin_clave_privada' | 'sol'
+
+/** Respuesta de `GET /rucs/{ruc}/configuracion` y de `PUT /rucs/{ruc}/sunat`. Nunca trae claves. */
+export interface RespuestaConfiguracionRuc {
+  success: true
+  ruc: string
+  nombre: string | null
+  entorno: EntornoRuc
+  certificado: {
+    /** Hay un certificado instalado que se puede leer. */
+    instalado: boolean
+    vence: string | null
+    /** Negativo si ya venció. */
+    dias_para_vencer: number | null
+  }
+  sol: {
+    /** Hay usuario secundario y clave SOL propios (MODDATOS no cuenta). */
+    configurado: boolean
+    /** Usuario enmascarado (`FA*****1`); `MODDATOS` en prueba sin uno propio; `null` en producción sin SOL. */
+    usuario: string | null
+  }
+  /** Por dónde se envían los comprobantes. */
+  envio: 'sunat' | 'ose' | 'pse'
+  listo_para_produccion: boolean
+  faltantes: FaltanteConfiguracion[]
+  /** Solo en `configurarSunat` al pasar a producción si quedan comprobantes de prueba. */
+  aviso?: string
+  [campo: string]: unknown
+}
+
+/** Resultado de una comprobación de `rucs.verificar`. */
+export interface ComprobacionConfiguracion {
+  /** `true` correcto · `false` hay un problema · `null` no se pudo comprobar o no aplica. */
+  ok: boolean | null
+  mensaje: string
+}
+
+export interface RespuestaVerificarRuc {
+  success: true
+  ruc: string
+  listo_para_emitir: boolean
+  entorno: EntornoRuc
+  checks: {
+    certificado: ComprobacionConfiguracion
+    sol: ComprobacionConfiguracion
+  }
+  [campo: string]: unknown
+}
