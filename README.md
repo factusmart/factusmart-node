@@ -98,7 +98,7 @@ Los **datos** se envían y se reciben tal cual los define el API (claves en espa
 | `fs.rucs.crear({ ruc, empresa, correo, clave })` | `POST /rucs` | objeto (`ya_existia`) |
 | `fs.rucs.activar(ruc, activo)` | `PATCH /rucs/{ruc}/activation` | objeto |
 | `fs.rucs.subirCertificado(ruc, rutaOBytes, clave)` | `PUT /rucs/{ruc}/certificado` | objeto (`certificado.vence`, `ruc_coincide`) |
-| `fs.rucs.configurarSunat(ruc, { usuario_sol, clave_sol, entorno }?)` | `PUT /rucs/{ruc}/sunat` | objeto (configuración) |
+| `fs.rucs.configurarSunat(ruc, { usuario_sol, clave_sol, entorno, modalidad, pse_usuario, pse_clave }?)` | `PUT /rucs/{ruc}/sunat` | objeto (configuración) |
 | `fs.rucs.verificar(ruc)` | `POST /rucs/{ruc}/verificar` | objeto (`listo_para_emitir`, `checks`) |
 | `fs.rucs.configuracion(ruc)` | `GET /rucs/{ruc}/configuracion` | objeto (`entorno`, `faltantes`, …) |
 
@@ -224,6 +224,24 @@ const cfg = await fs.rucs.configuracion(ruc)
 //   envio: 'sunat' | 'ose' | 'pse', listo_para_produccion, faltantes: ['certificado', 'sol', ...] }
 ```
 
+**Sin certificado propio, con Smart PSE.** Da de alta la empresa en tu panel/API de Smart PSE y manda
+sus credenciales CPE; Smart PSE firma y envía por ti:
+
+```js
+const cfg = await fs.rucs.configurarSunat(ruc, {
+  modalidad: 'pse',
+  pse_usuario: process.env.PSE_USUARIO,
+  pse_clave: process.env.PSE_CLAVE, // nunca se devuelve ni sale en un error del SDK
+  entorno: 'produccion',
+})
+// cfg.pse: { proveedor: 'smartpse', configurado: true, usuario: 'FU*****F' }
+// cfg.aviso: el contribuyente debe designar a Smart PSE como su PSE en SUNAT (con su Clave SOL)
+const v = await fs.rucs.verificar(ruc) // v.checks.pse: { ok, mensaje } — pide un token a Smart PSE, no emite
+await fs.rucs.configurarSunat(ruc, { modalidad: 'propio' }) // volver a tu certificado
+```
+
+- Credenciales PSE rechazadas por Smart PSE → `ErrorDeValidacion` (422) y no se guarda nada. Un RUC
+  que envía por OSE no puede cambiar de modalidad por API.
 - Certificado con clave incorrecta, vencido o de otro RUC → `ErrorDeValidacion` (422). Si pasas
   una ruta que no existe, el SDK lanza `ErrorDeValidacion` sin llamar al API.
 - Pasar a `produccion` sin certificado vigente o sin SOL → `ErrorDeValidacion` con
@@ -232,7 +250,7 @@ const cfg = await fs.rucs.configuracion(ruc)
   (`RucNoAutorizado`, `codigo: 'SIN_PERMISO'`); `verificar` y `configuracion` sí.
 - `subirCertificado` y `configurarSunat` **no se reintentan** solos; `verificar` y `configuracion`
   sí (como un GET).
-- **Seguridad:** la clave del certificado, la clave SOL y el contenido del certificado nunca
+- **Seguridad:** la clave del certificado, la clave SOL, la clave PSE y el contenido del certificado nunca
   aparecen en los mensajes ni en los datos de los errores del SDK (se reemplazan por `***`). El API
   tampoco las devuelve. No las guardes en el código: léelas de variables de entorno o de tu gestor
   de secretos.

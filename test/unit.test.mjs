@@ -807,9 +807,9 @@ test('verificarFirmaWebhook: rechaza sin lanzar nunca', () => {
   }
 })
 
-test('la versión es 1.3.0 en el código y en package.json', () => {
+test('la versión es 1.4.0 en el código y en package.json', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-  assert.equal(FactuSmart.VERSION, '1.3.0')
+  assert.equal(FactuSmart.VERSION, '1.4.0')
   assert.equal(pkg.version, FactuSmart.VERSION)
 })
 
@@ -1076,6 +1076,87 @@ test('rucs.configurarSunat: 422 con faltantes — el error trae faltantes pero n
     return true
   })
   assert.equal(fetch.llamadas.length, 1, 'PUT /sunat no se reintenta')
+})
+
+const PSE_CLAVE = '379VMR6U'
+const CONFIG_PSE = {
+  success: true,
+  ruc: RUC_CFG,
+  nombre: 'API TENANT CLEAN SAC',
+  entorno: 'produccion',
+  certificado: { instalado: false, vence: null, dias_para_vencer: null },
+  sol: { configurado: false, usuario: null },
+  envio: 'pse',
+  modalidad: 'pse',
+  pse: { proveedor: 'smartpse', configurado: true, usuario: 'FU*****F' },
+  listo_para_produccion: true,
+  faltantes: [],
+  aviso: 'Con Smart PSE el contribuyente debe designar a Smart PSE como su PSE en SUNAT.',
+}
+
+test('rucs.configurarSunat: modalidad pse manda pse_usuario + pse_clave y lee pse/aviso', async () => {
+  const { fs, fetch } = cliente([{ cuerpo: CONFIG_PSE }, { cuerpo: CONFIG_OK }, { cuerpo: CONFIG_PSE }])
+  const r = await fs.rucs.configurarSunat(RUC_CFG, { modalidad: 'pse', pse_usuario: 'FURZQQ7F', pse_clave: PSE_CLAVE, entorno: 'produccion' })
+  assert.deepEqual(fetch.llamadas[0].cuerpo, { entorno: 'produccion', modalidad: 'pse', pse_usuario: 'FURZQQ7F', pse_clave: PSE_CLAVE })
+  assert.equal(fetch.llamadas[0].init.method, 'PUT')
+  sinXRuc(fetch.llamadas[0])
+  assert.equal(r.modalidad, 'pse')
+  assert.equal(r.pse?.usuario, 'FU*****F')
+  assert.match(r.aviso ?? '', /Smart PSE/)
+
+  // volver a certificado propio; y repetir 'pse' sin credenciales (la API lo permite) con entorno demo
+  await fs.rucs.configurarSunat(RUC_CFG, { modalidad: 'propio' })
+  assert.deepEqual(fetch.llamadas[1].cuerpo, { modalidad: 'propio' })
+  await fs.rucs.configurarSunat(RUC_CFG, { modalidad: 'pse', entorno: 'demo' })
+  assert.deepEqual(fetch.llamadas[2].cuerpo, { entorno: 'demo', modalidad: 'pse' })
+
+  const local = cliente([{ cuerpo: CONFIG_OK }])
+  await assert.rejects(local.fs.rucs.configurarSunat(RUC_CFG, { modalidad: 'pse', pse_usuario: 'FURZQQ7F' }), (e) => e instanceof ErrorDeValidacion && e.campos.pse_clave?.length === 1)
+  await assert.rejects(local.fs.rucs.configurarSunat(RUC_CFG, { modalidad: 'pse', pse_clave: PSE_CLAVE }), (e) => e instanceof ErrorDeValidacion && e.campos.pse_usuario?.length === 1)
+  await assert.rejects(local.fs.rucs.configurarSunat(RUC_CFG, { modalidad: 'ose' }), (e) => e instanceof ErrorDeValidacion && e.campos.modalidad?.length === 1)
+  assert.equal(local.fetch.llamadas.length, 0)
+})
+
+test('rucs.configurarSunat: 422 de Smart PSE nunca trae pse_clave y el PUT no se reintenta', async () => {
+  const cuerpo = {
+    success: false,
+    message: `Smart PSE rechazó el usuario o la clave PSE (${PSE_CLAVE}).`,
+    codigo: 'DATOS_INVALIDOS',
+    reintentable: false,
+    campos: { pse_clave: [`rechazada: ${PSE_CLAVE}`] },
+  }
+  const { fs, fetch } = cliente([{ status: 422, cuerpo }, { cuerpo: CONFIG_PSE }])
+  await assert.rejects(fs.rucs.configurarSunat(RUC_CFG, { modalidad: 'pse', pse_usuario: 'FURZQQ7F', pse_clave: PSE_CLAVE, usuario_sol: 'FACTURA1', clave_sol: CLAVE_SOL }), (e) => {
+    assert.ok(e instanceof ErrorDeValidacion)
+    const todo = [e.message, e.mensaje, String(e.stack), JSON.stringify(e), JSON.stringify(e.respuesta), JSON.stringify(e.campos)].join('\n')
+    assert.ok(!todo.includes(PSE_CLAVE), 'filtró la clave PSE')
+    assert.equal(e.campos.pse_clave[0], 'rechazada: ***')
+    return true
+  })
+  assert.equal(fetch.llamadas.length, 1)
+
+  const caido = cliente([{ status: 503, cuerpo: { success: false, message: 'caído' } }, { cuerpo: CONFIG_PSE }])
+  await assert.rejects(caido.fs.rucs.configurarSunat(RUC_CFG, { modalidad: 'pse', pse_usuario: 'FURZQQ7F', pse_clave: PSE_CLAVE }), FactuSmartError)
+  assert.equal(caido.fetch.llamadas.length, 1, 'PUT /sunat no se reintenta ante 503')
+})
+
+test('rucs.verificar: con modalidad pse trae checks.pse', async () => {
+  const resp = {
+    success: true,
+    ruc: RUC_CFG,
+    listo_para_emitir: true,
+    entorno: 'produccion',
+    modalidad: 'pse',
+    checks: {
+      certificado: { ok: null, mensaje: 'Este RUC envía por PSE.' },
+      sol: { ok: null, mensaje: 'Este RUC envía por PSE.' },
+      pse: { ok: true, mensaje: 'Smart PSE aceptó el usuario y la clave.' },
+    },
+  }
+  const { fs } = cliente([{ cuerpo: resp }])
+  const r = await fs.rucs.verificar(RUC_CFG)
+  assert.equal(r.modalidad, 'pse')
+  assert.equal(r.checks.pse?.ok, true)
 })
 
 test('rucs.verificar: POST /rucs/{ruc}/verificar sin cuerpo ni X-RUC; se reintenta ante 503', async () => {

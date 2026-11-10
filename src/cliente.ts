@@ -60,7 +60,7 @@ import type {
   Totales,
 } from './tipos.js'
 
-export const VERSION = '1.3.0'
+export const VERSION = '1.4.0'
 
 type FuncionFetch = (url: string, init?: Record<string, unknown>) => Promise<Response>
 
@@ -653,17 +653,29 @@ export class FactuSmart {
       },
       configurarSunat: async (ruc, datos) => {
         const r = rucDeRuta(ruc, 'configurarSunat')
-        const uso = 'rucs.configurarSunat(ruc, datos): pasa { usuario_sol, clave_sol } y/o { entorno }.'
+        const uso =
+          'rucs.configurarSunat(ruc, datos): pasa { usuario_sol, clave_sol }, { entorno } y/o { modalidad, pse_usuario, pse_clave }.'
         if (!esObjeto(datos)) throw errorLocalDeValidacion('datos', uso)
         const cuerpo: Record<string, unknown> = {}
-        for (const k of ['usuario_sol', 'clave_sol', 'entorno'] as const) {
+        for (const k of ['usuario_sol', 'clave_sol', 'entorno', 'modalidad', 'pse_usuario', 'pse_clave'] as const) {
           if (datos[k] !== undefined && datos[k] !== null) cuerpo[k] = datos[k]
         }
         if (Object.keys(cuerpo).length === 0) throw errorLocalDeValidacion('datos', uso)
-        if (cuerpo.entorno !== undefined && cuerpo.entorno !== 'prueba' && cuerpo.entorno !== 'produccion') {
+        if (cuerpo.entorno !== undefined && !['prueba', 'produccion', 'demo'].includes(cuerpo.entorno as string)) {
           throw errorLocalDeValidacion('entorno', "rucs.configurarSunat: entorno debe ser 'prueba' o 'produccion'.")
         }
-        const secretos = typeof cuerpo.clave_sol === 'string' && cuerpo.clave_sol !== '' ? [cuerpo.clave_sol] : []
+        if (cuerpo.modalidad !== undefined && cuerpo.modalidad !== 'propio' && cuerpo.modalidad !== 'pse') {
+          throw errorLocalDeValidacion('modalidad', "rucs.configurarSunat: modalidad debe ser 'propio' o 'pse'.")
+        }
+        for (const [a, b] of [['usuario_sol', 'clave_sol'], ['pse_usuario', 'pse_clave']] as const) {
+          if ((cuerpo[a] === undefined) !== (cuerpo[b] === undefined)) {
+            const falta = cuerpo[a] === undefined ? a : b
+            throw errorLocalDeValidacion(falta, `rucs.configurarSunat: ${a} y ${b} van juntos (pasa los dos).`)
+          }
+        }
+        const secretos = [cuerpo.clave_sol, cuerpo.pse_clave].filter(
+          (v): v is string => typeof v === 'string' && v !== '',
+        )
         return this.peticion({ metodo: 'PUT', ruta: `/rucs/${r}/sunat`, cuerpo, reintentable: false, secretos })
       },
       // POST sin efectos (no emite ni guarda nada): se reintenta como un GET. Sin cuerpo.
