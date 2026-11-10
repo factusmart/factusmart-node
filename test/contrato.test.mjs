@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
-import { FactuSmart } from '../dist/index.js'
+import { FactuSmart, CODIGOS_DE_ERROR } from '../dist/index.js'
 
 const RUTA_YAML = process.env.FACTUSMART_OPENAPI || new URL('./fixtures/openapi.yaml', import.meta.url)
 
@@ -66,4 +66,14 @@ test('contrato: todos los operationId del openapi.yaml tienen método en el SDK'
   const sobran = Object.keys(METODOS).filter((id) => !ids.includes(id))
   assert.deepEqual(sobran, [], `métodos del SDK cuyo operationId ya no está en el yaml: ${sobran.join(', ')}`)
   console.log(`  ${ids.length} operationId verificados contra ${RUTA_YAML}`)
+})
+
+test('contrato: cada valor del enum CodigoError del openapi.yaml está en CODIGOS_DE_ERROR', { skip: !existsSync(RUTA_YAML) && `no existe ${RUTA_YAML}` }, () => {
+  const yaml = readFileSync(RUTA_YAML, 'utf8')
+  const bloque = /^    CodigoError:\r?\n([\s\S]*?)\r?\n    [A-Za-z]+:\r?\n/m.exec(yaml)
+  assert.ok(bloque, 'falta CodigoError en el yaml')
+  const valores = [...bloque[1].matchAll(/^\s+- ([A-Z_]+)\s*$/gm)].map((m) => m[1])
+  assert.ok(valores.length > 0)
+  const faltan = valores.filter((c) => !CODIGOS_DE_ERROR.includes(c))
+  assert.deepEqual(faltan, [], `códigos del API sin entrada en CODIGOS_DE_ERROR: ${faltan.join(', ')}`)
 })

@@ -45,6 +45,16 @@ export const CODIGOS_DE_ERROR = [
   'LIMITE_CONSULTAS',
   /** 503 reintentable: SUNAT y el proveedor de respaldo no responden (`consultas.*`). */
   'CONSULTA_NO_DISPONIBLE',
+  /**
+   * 429 reintentable tras `Retry-After`: más de 10 verificaciones por hora para la misma llave y RUC
+   * (`rucs.verificar`, o `rucs.configurarSunat` con claves). El SDK NO lo repite solo (la espera puede ser
+   * de varios minutos): mira `segundosDeEspera`.
+   */
+  'LIMITE_VERIFICACIONES',
+  /** 422 NO reintentable: pasar a `prueba` un RUC en producción exige `confirmar: true`. */
+  'CONFIRMAR_CAMBIO_ENTORNO',
+  /** 503 reintentable: Smart PSE no respondió (RUC en producción); no se guardó nada. */
+  'PSE_NO_DISPONIBLE',
 ] as const
 
 /** Código conocido, o cualquier otro string (el tipo queda abierto a códigos nuevos). */
@@ -134,6 +144,8 @@ export class ErrorDeValidacion extends FactuSmartError {
  *   reintenta; el cupo se reinicia a medianoche (hora de Perú).
  * - `LIMITE_CONSULTAS` (`reintentable: false`): cupo de consultas de RUC/DNI agotado; se renueva en
  *   `respuesta.se_renueva`. No se reintenta.
+ * - `LIMITE_VERIFICACIONES` (`reintentable: true`): más de 10 verificaciones por hora del RUC. El SDK no
+ *   lo repite solo; espera `segundosDeEspera` (cabecera `Retry-After`) y vuelve a intentar.
  */
 export class LimiteDePeticiones extends FactuSmartError {
   /** Segundos que pide esperar el API (Retry-After o "Espera N segundos"), si se pudo leer. */

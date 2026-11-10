@@ -60,7 +60,7 @@ import type {
   Totales,
 } from './tipos.js'
 
-export const VERSION = '1.4.0'
+export const VERSION = '1.5.0'
 
 type FuncionFetch = (url: string, init?: Record<string, unknown>) => Promise<Response>
 
@@ -432,19 +432,40 @@ export class FactuSmart {
     /**
      * PUT /rucs/{ruc}/certificado — instala el certificado digital (.pfx / .p12). `certificado` es la
      * ruta del archivo o sus bytes; el SDK lo manda en base64. Comprueba clave, vigencia y que sea del
-     * RUC. La llave de prueba no puede (403 SIN_PERMISO). No se reintenta. La clave y el contenido
-     * nunca aparecen en los errores.
+     * RUC. Solo hace falta con `modalidad: 'propio'` (Smart PSE no usa certificado). La llave de prueba
+     * no puede (403 SIN_PERMISO); RUC bloqueado o con plan vencido → 403 RUC_DESACTIVADO. No se
+     * reintenta. La clave y el contenido nunca aparecen en los errores.
      */
     subirCertificado: (ruc: string, certificado: CertificadoEntrada, clave: string) => Promise<RespuestaSubirCertificado>
     /**
-     * PUT /rucs/{ruc}/sunat — usuario/clave SOL y/o entorno (`prueba` | `produccion`). No llama a
-     * SUNAT (para eso, `verificar`). Falta algo para producción → 422 con `respuesta.faltantes`. No se
-     * reintenta. La clave SOL nunca aparece en los errores.
+     * PUT /rucs/{ruc}/sunat — usuario/clave SOL, `modalidad` de firma y/o `entorno` (`prueba` |
+     * `produccion`). No se reintenta. `clave_sol` y `pse_clave` nunca aparecen en los errores.
+     *
+     * - `modalidad: 'propio'`: tu certificado firma, directo a SUNAT. Para producción: certificado + SOL.
+     * - `modalidad: 'pse'` (Smart PSE, el único PSE): firma y envía Smart PSE, **sin certificado
+     *   propio**. Para producción: `pse_usuario` + `pse_clave` (usuario_secundaria y token_acceso de la
+     *   empresa en Smart PSE; obligatorios si el RUC aún no los tiene) **y también el SOL**.
+     * - Con `pse`, antes de emitir en producción el contribuyente debe **designar a Smart PSE como su PSE
+     *   en SUNAT** (Clave SOL → Empresas → PSE). `verificar` no puede comprobar esa designación; la
+     *   respuesta trae un `aviso` que lo recuerda.
+     * - `confirmar: true` es obligatorio para pasar a `entorno: 'prueba'` un RUC que ya está en
+     *   producción; sin él → 422 `CONFIRMAR_CAMBIO_ENTORNO` y no se guarda nada. Solo se envía si lo pasas.
+     * - Falta algo para producción → 422 con `respuesta.faltantes`. 403 `RUC_DESACTIVADO` (RUC bloqueado o
+     *   plan vencido), 429 `LIMITE_VERIFICACIONES` (con claves: más de 10 por hora; mira
+     *   `segundosDeEspera`), 503 `PSE_NO_DISPONIBLE` (Smart PSE no respondió en producción; no se guardó nada).
      */
     configurarSunat: (ruc: string, datos: DatosSunatRuc) => Promise<RespuestaConfiguracionRuc>
-    /** POST /rucs/{ruc}/verificar — prueba certificado y SOL contra SUNAT sin emitir nada. No consume crédito. */
+    /**
+     * POST /rucs/{ruc}/verificar — prueba certificado y SOL (también en prueba) y, con `pse`, las
+     * credenciales de Smart PSE, sin emitir nada. No consume crédito; se reintenta como un GET. No puede
+     * comprobar la designación de Smart PSE en SUNAT. Máx. 10 por hora por llave y RUC → 429
+     * `LIMITE_VERIFICACIONES` (no se reintenta solo; mira `segundosDeEspera`). 403 `RUC_DESACTIVADO`.
+     */
     verificar: (ruc: string) => Promise<RespuestaVerificarRuc>
-    /** GET /rucs/{ruc}/configuracion — entorno, certificado, SOL (enmascarado) y qué falta. No llama a SUNAT. */
+    /**
+     * GET /rucs/{ruc}/configuracion — entorno, certificado, SOL (enmascarado), `modalidad`, `pse`, qué falta
+     * (`faltantes`) y, si aplica, `aviso`. No llama a SUNAT. Responde aunque el RUC esté desactivado.
+     */
     configuracion: (ruc: string) => Promise<RespuestaConfiguracionRuc>
   }
 
@@ -654,13 +675,19 @@ export class FactuSmart {
       configurarSunat: async (ruc, datos) => {
         const r = rucDeRuta(ruc, 'configurarSunat')
         const uso =
-          'rucs.configurarSunat(ruc, datos): pasa { usuario_sol, clave_sol }, { entorno } y/o { modalidad, pse_usuario, pse_clave }.'
+          'rucs.configurarSunat(ruc, datos): pasa { usuario_sol, clave_sol }, { entorno } y/o { modalidad, pse_usuario, pse_clave } (y confirmar si pasas a prueba).'
         if (!esObjeto(datos)) throw errorLocalDeValidacion('datos', uso)
         const cuerpo: Record<string, unknown> = {}
         for (const k of ['usuario_sol', 'clave_sol', 'entorno', 'modalidad', 'pse_usuario', 'pse_clave'] as const) {
           if (datos[k] !== undefined && datos[k] !== null) cuerpo[k] = datos[k]
         }
         if (Object.keys(cuerpo).length === 0) throw errorLocalDeValidacion('datos', uso)
+        if (datos.confirmar !== undefined && datos.confirmar !== null) {
+          if (typeof datos.confirmar !== 'boolean') {
+            throw errorLocalDeValidacion('confirmar', 'rucs.configurarSunat: confirmar debe ser true o false.')
+          }
+          cuerpo.confirmar = datos.confirmar
+        }
         if (cuerpo.entorno !== undefined && !['prueba', 'produccion', 'demo'].includes(cuerpo.entorno as string)) {
           throw errorLocalDeValidacion('entorno', "rucs.configurarSunat: entorno debe ser 'prueba' o 'produccion'.")
         }
@@ -866,8 +893,11 @@ export class FactuSmart {
 
         // `reintentable: false` en el cuerpo manda sobre la regla por HTTP (ej. 429 LIMITE_PRUEBAS_DIARIO).
         // Sin el campo (servidor anterior), `error.reintentable` es null y se usa la regla por HTTP.
+        // 429 LIMITE_VERIFICACIONES es reintentable para el API, pero su Retry-After puede ser de media
+        // hora: no se repite solo, se lanza LimiteDePeticiones con segundosDeEspera.
         const transitorio =
           error.reintentable !== false &&
+          error.codigo !== 'LIMITE_VERIFICACIONES' &&
           (error instanceof LimiteDePeticiones ||
             respuesta.status === 502 ||
             respuesta.status === 503 ||

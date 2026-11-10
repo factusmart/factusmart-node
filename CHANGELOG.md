@@ -1,5 +1,23 @@
 # Cambios
 
+## 1.5.0 — 2026-11-10
+
+- `rucs.configurarSunat(ruc, datos)` acepta `confirmar` (boolean, opcional; solo se envía si lo pasas):
+  obligatorio en `true` para pasar a `entorno: 'prueba'` un RUC que ya emite en producción.
+- `CODIGOS_DE_ERROR`: nuevos `LIMITE_VERIFICACIONES` (429, máx. 10 verificaciones por hora por llave y
+  RUC), `CONFIRMAR_CAMBIO_ENTORNO` (422, no reintentable) y `PSE_NO_DISPONIBLE` (503, reintentable).
+  `RUC_DESACTIVADO` (403) aplica ahora también a certificado, sunat y verificar.
+- `429 LIMITE_VERIFICACIONES` lanza `LimiteDePeticiones` con `segundosDeEspera` (de `Retry-After`) y **no**
+  se reintenta solo: la espera puede ser de varios minutos.
+- Tipos: `RespuestaConfiguracionRuc.modalidad` y `.pse` pasan a obligatorios (como en el API); `aviso`
+  documentado también para `configuracion`; `FaltanteConfiguracion` suma `certificado_otro_ruc`;
+  `DatosSunatRuc.confirmar`.
+- JSDoc y README: los dos caminos para producción (`propio`: certificado + SOL; `pse`: credenciales Smart
+  PSE + SOL, sin certificado) y la designación de Smart PSE en SUNAT, que `verificar` no comprueba.
+- Contrato: `test/fixtures/openapi.yaml` actualizado; nueva prueba que exige cada valor del enum
+  `CodigoError` en `CODIGOS_DE_ERROR`.
+- `VERSION` y el User-Agent: `1.5.0`.
+
 ## 1.4.0 — 2026-11-10
 
 - `rucs.configurarSunat(ruc, datos)` acepta la **modalidad de firma** (`PUT /rucs/{ruc}/sunat`):

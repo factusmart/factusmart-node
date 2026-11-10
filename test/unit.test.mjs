@@ -807,9 +807,9 @@ test('verificarFirmaWebhook: rechaza sin lanzar nunca', () => {
   }
 })
 
-test('la versión es 1.4.0 en el código y en package.json', () => {
+test('la versión es 1.5.0 en el código y en package.json', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-  assert.equal(FactuSmart.VERSION, '1.4.0')
+  assert.equal(FactuSmart.VERSION, '1.5.0')
   assert.equal(pkg.version, FactuSmart.VERSION)
 })
 
@@ -1193,4 +1193,69 @@ test('rucs.configuracion: GET /rucs/{ruc}/configuracion sin X-RUC ni ?ruc= y dev
 
   const nf = cliente([{ status: 404, cuerpo: { success: false, message: 'Ese RUC no pertenece a esta cuenta o no existe.', codigo: 'NO_ENCONTRADO', reintentable: false } }])
   await assert.rejects(nf.fs.rucs.configuracion(RUC_CFG), (e) => e instanceof NoEncontrado && e.codigo === 'NO_ENCONTRADO')
+})
+
+test('rucs.configurarSunat: confirmar solo se envía si se pasa; 422 CONFIRMAR_CAMBIO_ENTORNO no se reintenta', async () => {
+  const sinConfirmar = {
+    success: false,
+    message: 'El RUC emite en producción. Los comprobantes en prueba no tienen validez y usan la misma numeración. Repite con confirmar: true.',
+    codigo: 'CONFIRMAR_CAMBIO_ENTORNO',
+    reintentable: false,
+  }
+  const { fs, fetch, esperas } = cliente([{ status: 422, cuerpo: sinConfirmar }, { cuerpo: { ...CONFIG_OK, aviso: 'Pasó a prueba.' } }])
+  await assert.rejects(fs.rucs.configurarSunat(RUC_CFG, { entorno: 'prueba' }), (e) => {
+    assert.ok(e instanceof ErrorDeValidacion)
+    assert.equal(e.codigo, 'CONFIRMAR_CAMBIO_ENTORNO')
+    assert.equal(e.reintentable, false)
+    return true
+  })
+  assert.equal(fetch.llamadas.length, 1)
+  assert.deepEqual(fetch.llamadas[0].cuerpo, { entorno: 'prueba' })
+  const r = await fs.rucs.configurarSunat(RUC_CFG, { entorno: 'prueba', confirmar: true })
+  assert.deepEqual(fetch.llamadas[1].cuerpo, { entorno: 'prueba', confirmar: true })
+  assert.equal(r.aviso, 'Pasó a prueba.')
+  assert.deepEqual(esperas, [])
+
+  const local = cliente([])
+  await assert.rejects(local.fs.rucs.configurarSunat(RUC_CFG, { confirmar: true }), ErrorDeValidacion)
+  await assert.rejects(local.fs.rucs.configurarSunat(RUC_CFG, { entorno: 'prueba', confirmar: 'si' }), (e) => e instanceof ErrorDeValidacion && e.campos.confirmar?.length === 1)
+  assert.equal(local.fetch.llamadas.length, 0)
+})
+
+test('rucs.verificar: 429 LIMITE_VERIFICACIONES no se reintenta solo y trae segundosDeEspera de Retry-After', async () => {
+  const cuerpo = {
+    success: false,
+    message: 'Hiciste más de 10 verificaciones en una hora para este RUC. Espera 1800 segundos e intenta de nuevo.',
+    retry_after: 1800,
+    codigo: 'LIMITE_VERIFICACIONES',
+    reintentable: true,
+  }
+  const { fs, fetch, esperas } = cliente([{ status: 429, cuerpo, cabeceras: { 'Retry-After': '1800' } }, { cuerpo: { success: true } }])
+  await assert.rejects(fs.rucs.verificar(RUC_CFG), (e) => {
+    assert.ok(e instanceof LimiteDePeticiones, `fue ${e.constructor.name}`)
+    assert.equal(e.codigo, 'LIMITE_VERIFICACIONES')
+    assert.equal(e.segundosDeEspera, 1800)
+    assert.equal(e.reintentable, true)
+    return true
+  })
+  assert.equal(fetch.llamadas.length, 1)
+  assert.deepEqual(esperas, [])
+})
+
+test('rucs: 503 PSE_NO_DISPONIBLE (el PUT no se reintenta) y 403 RUC_DESACTIVADO en verificar', async () => {
+  const { fs, fetch } = cliente([
+    { status: 503, cuerpo: { success: false, message: 'Smart PSE no respondió.', codigo: 'PSE_NO_DISPONIBLE', reintentable: true } },
+    { status: 403, cuerpo: { success: false, message: 'Este RUC está desactivado o su plan venció.', codigo: 'RUC_DESACTIVADO', reintentable: false } },
+  ])
+  await assert.rejects(fs.rucs.configurarSunat(RUC_CFG, { modalidad: 'pse', pse_usuario: 'FURZQQ7F', pse_clave: PSE_CLAVE }), (e) => {
+    assert.equal(e.codigo, 'PSE_NO_DISPONIBLE')
+    assert.equal(e.status, 503)
+    assert.equal(e.reintentable, true)
+    assert.ok(!e.message.includes(PSE_CLAVE))
+    return true
+  })
+  assert.equal(fetch.llamadas.length, 1)
+  await assert.rejects(fs.rucs.verificar(RUC_CFG), (e) => e instanceof RucNoAutorizado && e.codigo === 'RUC_DESACTIVADO')
+  assert.equal(fetch.llamadas.length, 2)
+  for (const c of ['LIMITE_VERIFICACIONES', 'CONFIRMAR_CAMBIO_ENTORNO', 'PSE_NO_DISPONIBLE']) assert.ok(CODIGOS_DE_ERROR.includes(c), c)
 })

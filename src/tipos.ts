@@ -756,20 +756,31 @@ export interface DatosSunatRuc {
   entorno?: EntornoRuc | 'demo'
   /**
    * `propio` (por defecto): tu certificado, directo a SUNAT; si el RUC estaba en PSE, se apaga y se
-   * borran sus credenciales. `pse`: Smart PSE firma y envía, sin certificado propio (manda
-   * `pse_usuario` + `pse_clave` la primera vez). Un RUC por OSE no cambia de modalidad por API.
+   * borran sus credenciales. Producción: certificado + SOL. `pse`: Smart PSE (el único PSE) firma y
+   * envía, sin certificado propio; manda `pse_usuario` + `pse_clave` si el RUC aún no los tiene.
+   * Producción: credenciales Smart PSE + SOL, y el contribuyente debe designar a Smart PSE como su PSE
+   * en SUNAT (Clave SOL → Empresas → PSE). Un RUC por OSE no cambia de modalidad por API.
    */
   modalidad?: ModalidadRuc
-  /** Solo con `modalidad: 'pse'`. Usuario CPE de la empresa en Smart PSE. Va con `pse_clave`. */
+  /** Solo con `modalidad: 'pse'`. Usuario CPE (usuario_secundaria) de la empresa en Smart PSE. Va con `pse_clave`. */
   pse_usuario?: string
   /** Solo con `modalidad: 'pse'`. Clave/token CPE de la empresa en Smart PSE. Nunca se devuelve. */
   pse_clave?: string
+  /**
+   * Obligatorio en `true` para pasar a `entorno: 'prueba'` un RUC que ya emite en producción (los
+   * comprobantes de prueba no tienen validez y usan la misma numeración). Sin él → 422
+   * `CONFIRMAR_CAMBIO_ENTORNO`. Solo se envía si lo pasas.
+   */
+  confirmar?: boolean
 }
 
 export type FaltanteConfiguracion =
   | 'certificado'
   | 'certificado_vencido'
   | 'certificado_sin_clave_privada'
+  /** El certificado instalado no es de este RUC (solo con `modalidad: 'propio'`). */
+  | 'certificado_otro_ruc'
+  /** También con `modalidad: 'pse'` en producción. */
   | 'sol'
   | 'pse_credenciales'
 
@@ -795,9 +806,9 @@ export interface RespuestaConfiguracionRuc {
   /** Por dónde se envían los comprobantes. */
   envio: 'sunat' | 'ose' | 'pse'
   /** `pse` si firma un PSE (Smart PSE); `propio` en cualquier otro caso (SUNAT directo u OSE). */
-  modalidad?: ModalidadRuc
+  modalidad: ModalidadRuc
   /** Solo con `modalidad: 'pse'`; `null` en otro caso. La clave nunca se devuelve. */
-  pse?: {
+  pse: {
     proveedor: 'smartpse' | 'otro'
     /** Hay usuario y clave PSE guardados. */
     configurado: boolean
@@ -807,8 +818,10 @@ export interface RespuestaConfiguracionRuc {
   listo_para_produccion: boolean
   faltantes: FaltanteConfiguracion[]
   /**
-   * Solo en `configurarSunat`: designar a Smart PSE como tu PSE en SUNAT (modalidad `pse`),
-   * credenciales PSE que no se pudieron comprobar, o comprobantes de prueba al pasar a producción.
+   * Opcional. En `configuracion` y `configurarSunat`: designar a Smart PSE como tu PSE en SUNAT
+   * (modalidad `pse`) o «El certificado vence el AAAA-MM-DD.» (menos de 30 días). Solo en
+   * `configurarSunat`: credenciales PSE que no se pudieron comprobar (en prueba), paso de producción a
+   * prueba confirmado o comprobantes de prueba al pasar a producción.
    */
   aviso?: string
   [campo: string]: unknown

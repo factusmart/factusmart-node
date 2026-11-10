@@ -98,7 +98,7 @@ Los **datos** se envían y se reciben tal cual los define el API (claves en espa
 | `fs.rucs.crear({ ruc, empresa, correo, clave })` | `POST /rucs` | objeto (`ya_existia`) |
 | `fs.rucs.activar(ruc, activo)` | `PATCH /rucs/{ruc}/activation` | objeto |
 | `fs.rucs.subirCertificado(ruc, rutaOBytes, clave)` | `PUT /rucs/{ruc}/certificado` | objeto (`certificado.vence`, `ruc_coincide`) |
-| `fs.rucs.configurarSunat(ruc, { usuario_sol, clave_sol, entorno, modalidad, pse_usuario, pse_clave }?)` | `PUT /rucs/{ruc}/sunat` | objeto (configuración) |
+| `fs.rucs.configurarSunat(ruc, { usuario_sol, clave_sol, entorno, modalidad, pse_usuario, pse_clave, confirmar }?)` | `PUT /rucs/{ruc}/sunat` | objeto (configuración) |
 | `fs.rucs.verificar(ruc)` | `POST /rucs/{ruc}/verificar` | objeto (`listo_para_emitir`, `checks`) |
 | `fs.rucs.configuracion(ruc)` | `GET /rucs/{ruc}/configuracion` | objeto (`entorno`, `faltantes`, …) |
 
@@ -224,27 +224,66 @@ const cfg = await fs.rucs.configuracion(ruc)
 //   envio: 'sunat' | 'ose' | 'pse', listo_para_produccion, faltantes: ['certificado', 'sol', ...] }
 ```
 
-**Sin certificado propio, con Smart PSE.** Da de alta la empresa en tu panel/API de Smart PSE y manda
-sus credenciales CPE; Smart PSE firma y envía por ti:
+**Dos caminos para producción** (Smart PSE es el único PSE):
+
+| `modalidad` | Quién firma | Qué necesitas para `produccion` |
+|---|---|---|
+| `propio` | tu certificado, directo a SUNAT | certificado (`subirCertificado`) + usuario SOL |
+| `pse` | Smart PSE, **sin certificado propio** | `pse_usuario` + `pse_clave` (usuario_secundaria y token_acceso de la empresa en Smart PSE) + usuario SOL |
 
 ```js
+// Camino Smart PSE: sin certificado. El SOL también hace falta en producción (Consultar CDR, arreglo del 1033).
 const cfg = await fs.rucs.configurarSunat(ruc, {
   modalidad: 'pse',
   pse_usuario: process.env.PSE_USUARIO,
   pse_clave: process.env.PSE_CLAVE, // nunca se devuelve ni sale en un error del SDK
+  usuario_sol: 'FACTURA1',
+  clave_sol: process.env.CLAVE_SOL,
   entorno: 'produccion',
 })
 // cfg.pse: { proveedor: 'smartpse', configurado: true, usuario: 'FU*****F' }
-// cfg.aviso: el contribuyente debe designar a Smart PSE como su PSE en SUNAT (con su Clave SOL)
+// cfg.aviso: recuerda designar a Smart PSE como tu PSE en SUNAT
 const v = await fs.rucs.verificar(ruc) // v.checks.pse: { ok, mensaje } — pide un token a Smart PSE, no emite
 await fs.rucs.configurarSunat(ruc, { modalidad: 'propio' }) // volver a tu certificado
 ```
+
+> **Antes de emitir en producción con Smart PSE**, el contribuyente debe designar a Smart PSE como su PSE
+> en SUNAT (Clave SOL → Empresas → PSE). `verificar` **no** puede comprobar esa designación.
+
+**Volver de producción a prueba** exige `confirmar: true` (los comprobantes de prueba no tienen validez y
+usan la misma numeración). Sin él: `ErrorDeValidacion` con `codigo: 'CONFIRMAR_CAMBIO_ENTORNO'` y no se
+guarda nada. `confirmar` solo se envía si lo pasas.
+
+```js
+try {
+  await fs.rucs.configurarSunat(ruc, { entorno: 'prueba' })
+} catch (e) {
+  if (e.codigo === 'CONFIRMAR_CAMBIO_ENTORNO') {
+    const cfg = await fs.rucs.configurarSunat(ruc, { entorno: 'prueba', confirmar: true }) // trae cfg.aviso
+  } else throw e
+}
+```
+
+Errores propios de la configuración del RUC:
+
+| `codigo` | HTTP | Qué hacer |
+|---|---|---|
+| `RUC_DESACTIVADO` | 403 | RUC bloqueado o plan vencido: reactívalo. Aplica a `subirCertificado`, `configurarSunat` y `verificar` (`configuracion` sigue respondiendo) |
+| `LIMITE_VERIFICACIONES` | 429 | Más de 10 verificaciones por hora para la misma llave y RUC (`verificar`, o `configurarSunat` con claves). Espera `e.segundosDeEspera` (`Retry-After`); el SDK **no** lo repite solo porque la espera puede ser de varios minutos |
+| `CONFIRMAR_CAMBIO_ENTORNO` | 422 | Repite con `confirmar: true` si de verdad quieres pasar a prueba. No reintentable |
+| `PSE_NO_DISPONIBLE` | 503 | Smart PSE no respondió con el RUC en producción; no se guardó nada. Reintenta más tarde |
+
+`configuracion(ruc).faltantes` puede traer `certificado`, `certificado_vencido`,
+`certificado_sin_clave_privada`, `certificado_otro_ruc` (el certificado instalado no es de este RUC; solo
+con `propio`), `sol` (también con `pse` en producción) y `pse_credenciales`. La respuesta siempre trae
+`modalidad` y `pse` (`null` con `propio`), y puede traer `aviso` (designar a Smart PSE, o el certificado
+vence en menos de 30 días).
 
 - Credenciales PSE rechazadas por Smart PSE → `ErrorDeValidacion` (422) y no se guarda nada. Un RUC
   que envía por OSE no puede cambiar de modalidad por API.
 - Certificado con clave incorrecta, vencido o de otro RUC → `ErrorDeValidacion` (422). Si pasas
   una ruta que no existe, el SDK lanza `ErrorDeValidacion` sin llamar al API.
-- Pasar a `produccion` sin certificado vigente o sin SOL → `ErrorDeValidacion` con
+- Pasar a `produccion` sin lo que pide la modalidad (ver tabla) → `ErrorDeValidacion` con
   `e.respuesta.faltantes` (no se guarda nada).
 - La llave de **prueba** (`fs_test_…`) no puede subir certificado ni cambiar SOL/entorno
   (`RucNoAutorizado`, `codigo: 'SIN_PERMISO'`); `verificar` y `configuracion` sí.
@@ -370,6 +409,9 @@ Códigos más comunes (lista completa en `CODIGOS_DE_ERROR`; el API puede agrega
 | `LIMITE_PRUEBAS_DIARIO` | 429 **no reintentable**: tope de 200 operaciones/día en RUCs demo |
 | `LIMITE_CONSULTAS` | 429 **no reintentable**: se acabó el cupo de consultas de RUC/DNI (ver `se_renueva`) |
 | `CONSULTA_NO_DISPONIBLE` | 503: SUNAT y el respaldo no responden en `consultas.*` (reintentable) |
+| `LIMITE_VERIFICACIONES` | 429: más de 10 verificaciones del RUC por hora; espera `segundosDeEspera` (el SDK no lo repite solo) |
+| `CONFIRMAR_CAMBIO_ENTORNO` | 422 **no reintentable**: pasar a prueba un RUC en producción exige `confirmar: true` |
+| `PSE_NO_DISPONIBLE` | 503: Smart PSE no respondió; no se guardó nada (reintenta más tarde) |
 | `ANULACION_MIXTA` | Facturas y boletas en la misma anulación (422) |
 | `LLAVE_DE_PRUEBA_EN_PRODUCCION` | Llave de prueba usada con un RUC en producción (403) |
 | `ERROR_INTERNO` | Error del servidor |
@@ -429,6 +471,8 @@ en tiempo constante y nunca lanza: si la firma o el secreto faltan o están mal 
 - **`reintentable: false` manda:** si el cuerpo del error trae `reintentable: false`, no se reintenta
   nunca, aunque el HTTP sea 429, 409, 502, 503 o 504 (caso real: 429 `LIMITE_PRUEBAS_DIARIO`). Si el
   cuerpo no trae `reintentable` (servidor de versión anterior), se usa la regla por HTTP de arriba.
+- `429 LIMITE_VERIFICACIONES` tampoco se repite solo (aunque diga `reintentable: true`): su `Retry-After`
+  puede ser de media hora. Se lanza `LimiteDePeticiones` con `e.segundosDeEspera`.
 - **Nunca** se reintentan automáticamente: `anulaciones.crear`, `guias.emitir` (no acepta
   `Idempotency-Key`), `comprobantes.reenviar`, `comprobantes.consultarSunat`, `rucs.activar`,
   aunque el API responda `reintentable: true`.
